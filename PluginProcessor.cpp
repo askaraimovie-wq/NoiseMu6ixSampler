@@ -3,6 +3,20 @@
 #include <cmath>
 #include <algorithm>
 
+juce::Colour NoiseMu6ixSamplerAudioProcessor::getKeyswitchPaletteColour (int idx)
+{
+    switch (idx)
+    {
+        case 0:  return juce::Colour (0xffe04848); // Red
+        case 1:  return juce::Colour (0xff38c172); // Green
+        case 2:  return juce::Colour (0xfff2c94c); // Yellow
+        case 3:  return juce::Colour (0xff9b51e0); // Purple
+        case 4:  return juce::Colour (0xfff2994a); // Orange
+        case 5:  return juce::Colour (0xff2dd4bf); // Cyan
+        default: return juce::Colour (0xffe04848);
+    }
+}
+
 NoiseMu6ixSamplerAudioProcessor::NoiseMu6ixSamplerAudioProcessor()
     : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "PARAMS", createParameterLayout())
@@ -12,6 +26,8 @@ NoiseMu6ixSamplerAudioProcessor::NoiseMu6ixSamplerAudioProcessor()
 
     SampleGroup g1;
     g1.name = "Group 1";
+    g1.keyswitchNote = 24;
+    g1.keyswitchColorIdx = 0;
     groups.push_back (g1);
 
     macroConfigs[0] = { "Dynamics",   true,  true,  (int)MacroTarget::Dynamics };
@@ -98,8 +114,10 @@ int NoiseMu6ixSamplerAudioProcessor::addGroup (const juce::String& name)
 {
     const juce::ScopedLock sl (dataLock);
     SampleGroup g;
-    int idx = (int)groups.size() + 1;
-    g.name = name.isEmpty() ? ("Group " + juce::String (idx)) : name;
+    int idx = (int)groups.size();
+    g.name = name.isEmpty() ? ("Group " + juce::String (idx + 1)) : name;
+    g.keyswitchNote = juce::jlimit (24, 96, 24 + idx);
+    g.keyswitchColorIdx = idx % 6;
     groups.push_back (g);
     return (int)groups.size() - 1;
 }
@@ -225,18 +243,6 @@ void NoiseMu6ixSamplerAudioProcessor::loadSampleFile (const juce::File& file, in
         zone->lowKey   = juce::jlimit (0, 127, parsedNote - 6);
         zone->highKey  = juce::jlimit (0, 127, parsedNote + 6);
 
-        int parsedRR = parseRRFromFilename (zone->name);
-        if (parsedRR >= 1)
-        {
-            while ((int)groups.size() < parsedRR)
-            {
-                SampleGroup ng;
-                ng.name = "Group " + juce::String ((int)groups.size() + 1);
-                groups.push_back (ng);
-            }
-            gIdx = parsedRR - 1;
-        }
-
         auto lower = zone->name.toLowerCase();
         if (lower.contains ("long") || lower.contains ("sus"))
             zone->isLooping.store (true);
@@ -254,28 +260,33 @@ void NoiseMu6ixSamplerAudioProcessor::loadSampleFolder (const juce::File& folder
     files.sort();
     for (auto& f : files)
         loadSampleFile (f, targetGroupIdx, true, -1);
-    autoSpreadKeyRanges();
+    autoSpreadKeyRanges (targetGroupIdx);
 }
 
-void NoiseMu6ixSamplerAudioProcessor::autoSpreadKeyRanges()
+void NoiseMu6ixSamplerAudioProcessor::autoSpreadKeyRanges (int onlyGroupIdx)
 {
     const juce::ScopedLock sl (dataLock);
     if (zones.empty()) return;
 
     std::vector<int> uniqueRoots;
     for (auto& z : zones)
+    {
+        if (onlyGroupIdx >= 0 && z->groupIndex != onlyGroupIdx) continue;
         if (std::find (uniqueRoots.begin(), uniqueRoots.end(), z->rootNote) == uniqueRoots.end())
             uniqueRoots.push_back (z->rootNote);
-
+    }
+    if (uniqueRoots.empty()) return;
     std::sort (uniqueRoots.begin(), uniqueRoots.end());
 
     for (auto& z : zones)
     {
+        if (onlyGroupIdx >= 0 && z->groupIndex != onlyGroupIdx) continue;
         auto it = std::find (uniqueRoots.begin(), uniqueRoots.end(), z->rootNote);
+        if (it == uniqueRoots.end()) continue;
         size_t idx = (size_t)std::distance (uniqueRoots.begin(), it);
 
-        z->lowKey  = (idx == 0) ? 0 : (uniqueRoots[idx - 1] + uniqueRoots[idx]) / 2 + 1;
-        z->highKey = (idx + 1 == uniqueRoots.size()) ? 127 : (uniqueRoots[idx] + uniqueRoots[idx + 1]) / 2;
+        z->lowKey  = (idx == 0) ? 24 : (uniqueRoots[idx - 1] + uniqueRoots[idx]) / 2 + 1;
+        z->highKey = (idx + 1 == uniqueRoots.size()) ? 96 : (uniqueRoots[idx] + uniqueRoots[idx + 1]) / 2;
     }
 }
 
@@ -365,42 +376,64 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
 
             std::vector<std::shared_ptr<SampleZone>> matches;
             std::vector<SampleGroup> groupSnapshot;
+            bool consumedByKeyswitch = false;
+
             {
                 const juce::ScopedTryLock sl (dataLock);
                 if (sl.isLocked())
                 {
                     groupSnapshot = groups;
-                    bool anySolo = false;
-                    for (auto& g : groups) if (g.solo) { anySolo = true; break; }
 
-                    for (auto& z : zones)
+                    // Check if pressed note is a Keyswitch when Keyswitch Master is ON
+                    if (keyswitchMasterOn.load())
                     {
-                        if (z->groupIndex < 0 || z->groupIndex >= (int)groups.size()) continue;
-                        const auto& g = groups[(size_t)z->groupIndex];
-                        if (g.mute) continue;
-                        if (anySolo && !g.solo) continue;
+                        for (const auto& g : groups)
+                        {
+                            if (g.keyswitchEnabled && g.keyswitchNote == note)
+                            {
+                                activeKeyswitchNote.store (note);
+                                consumedByKeyswitch = true;
+                                break;
+                            }
+                        }
+                    }
 
-                        if (note >= z->lowKey && note <= z->highKey &&
-                            vel  >= z->lowVel && vel  <= z->highVel &&
-                            z->buffer.getNumSamples() > 0)
-                            matches.push_back (z);
+                    if (!consumedByKeyswitch)
+                    {
+                        bool anySolo = false;
+                        for (auto& g : groups) if (g.solo) { anySolo = true; break; }
+                        bool ksMaster = keyswitchMasterOn.load();
+                        int curKS = activeKeyswitchNote.load();
+
+                        for (auto& z : zones)
+                        {
+                            if (z->groupIndex < 0 || z->groupIndex >= (int)groups.size()) continue;
+                            const auto& g = groups[(size_t)z->groupIndex];
+                            if (g.mute) continue;
+                            if (anySolo && !g.solo) continue;
+
+                            // Keyswitch filtering: if KS is enabled on this group, only play if it matches active KS!
+                            if (ksMaster && g.keyswitchEnabled && g.keyswitchNote != curKS)
+                                continue;
+
+                            if (note >= z->lowKey && note <= z->highKey &&
+                                vel  >= z->lowVel && vel  <= z->highVel &&
+                                z->buffer.getNumSamples() > 0)
+                                matches.push_back (z);
+                        }
                     }
                 }
             }
 
-            if (!matches.empty())
+            if (!consumedByKeyswitch && !matches.empty())
             {
                 if (rrEnabled.load() && matches.size() > 1)
                 {
-                    // Unlimited Round Robin across ALL matching zones/groups!
                     int count = (int)matches.size();
                     int chosenIdx = 0;
-                    int mode = rrMode.load();
-                    if (mode == 0) // Cycle
-                    {
+                    if (rrMode.load() == 0)
                         chosenIdx = (lastRRIndexPerNote[note] + 1) % count;
-                    }
-                    else // No-Repeat Random
+                    else
                     {
                         std::uniform_int_distribution<int> dist (0, count - 2);
                         int r = dist (rng);
@@ -416,7 +449,6 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
                 }
                 else
                 {
-                    // Round Robin OFF: play all matching zones together (layering)
                     for (auto& selectedZone : matches)
                     {
                         SampleGroup grp;
@@ -606,9 +638,11 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
 
 std::unique_ptr<juce::XmlElement> NoiseMu6ixSamplerAudioProcessor::buildStateXml (bool forMonolith)
 {
-    auto root = std::make_unique<juce::XmlElement> ("NoiseMu6ixStateV104");
+    auto root = std::make_unique<juce::XmlElement> ("NoiseMu6ixStateV105");
     root->setAttribute ("rrEnabled", rrEnabled.load());
     root->setAttribute ("rrMode", rrMode.load());
+    root->setAttribute ("ksMaster", keyswitchMasterOn.load());
+    root->setAttribute ("activeKS", activeKeyswitchNote.load());
 
     if (auto apvtsXml = apvts.copyState().createXml())
         root->addChildElement (apvtsXml.release());
@@ -662,6 +696,9 @@ std::unique_ptr<juce::XmlElement> NoiseMu6ixSamplerAudioProcessor::buildStateXml
         gx->setAttribute ("tune", g.tuneSemi);
         gx->setAttribute ("solo", g.solo);
         gx->setAttribute ("mute", g.mute);
+        gx->setAttribute ("ksOn", g.keyswitchEnabled);
+        gx->setAttribute ("ksNote", g.keyswitchNote);
+        gx->setAttribute ("ksCol", g.keyswitchColorIdx);
     }
 
     auto* zonesXml = root->createNewChildElement ("Zones");
@@ -698,6 +735,8 @@ void NoiseMu6ixSamplerAudioProcessor::applyStateXml (const juce::XmlElement& roo
 {
     rrEnabled.store (root.getBoolAttribute ("rrEnabled", true));
     rrMode.store (root.getIntAttribute ("rrMode", 0));
+    keyswitchMasterOn.store (root.getBoolAttribute ("ksMaster", false));
+    activeKeyswitchNote.store (root.getIntAttribute ("activeKS", 24));
 
     if (auto* apvtsXml = root.getChildByName (apvts.state.getType()))
         apvts.replaceState (juce::ValueTree::fromXml (*apvtsXml));
@@ -753,12 +792,15 @@ void NoiseMu6ixSamplerAudioProcessor::applyStateXml (const juce::XmlElement& roo
         for (auto* gx : groupsXml->getChildIterator())
         {
             SampleGroup g;
-            g.name     = gx->getStringAttribute ("name", "Group");
-            g.volumeDb = (float)gx->getDoubleAttribute ("vol", 0.0);
-            g.pan      = (float)gx->getDoubleAttribute ("pan", 0.0);
-            g.tuneSemi = (float)gx->getDoubleAttribute ("tune", 0.0);
-            g.solo     = gx->getBoolAttribute ("solo", false);
-            g.mute     = gx->getBoolAttribute ("mute", false);
+            g.name              = gx->getStringAttribute ("name", "Group");
+            g.volumeDb          = (float)gx->getDoubleAttribute ("vol", 0.0);
+            g.pan               = (float)gx->getDoubleAttribute ("pan", 0.0);
+            g.tuneSemi          = (float)gx->getDoubleAttribute ("tune", 0.0);
+            g.solo              = gx->getBoolAttribute ("solo", false);
+            g.mute              = gx->getBoolAttribute ("mute", false);
+            g.keyswitchEnabled  = gx->getBoolAttribute ("ksOn", false);
+            g.keyswitchNote     = gx->getIntAttribute ("ksNote", 24);
+            g.keyswitchColorIdx = gx->getIntAttribute ("ksCol", 0);
             groups.push_back (g);
         }
         if (groups.empty()) groups.push_back (SampleGroup{});
@@ -887,7 +929,9 @@ bool NoiseMu6ixSamplerAudioProcessor::loadMonolithInstrument (const juce::File& 
     if (!xmlStream) return false;
 
     auto xml = juce::parseXML (xmlStream->readEntireStreamAsString());
-    if (!xml || !xml->hasTagName ("NoiseMu6ixStateV104")) return false;
+    if (!xml) return false;
+    if (!xml->hasTagName ("NoiseMu6ixStateV105") && !xml->hasTagName ("NoiseMu6ixStateV104") && !xml->hasTagName ("NoiseMu6ixStateV3"))
+        return false;
 
     applyStateXml (*xml, &zip);
     return true;
@@ -902,7 +946,7 @@ void NoiseMu6ixSamplerAudioProcessor::getStateInformation (juce::MemoryBlock& de
 void NoiseMu6ixSamplerAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     auto root = getXmlFromBinary (data, sizeInBytes);
-    if (root && root->hasTagName ("NoiseMu6ixStateV104"))
+    if (root && (root->hasTagName ("NoiseMu6ixStateV105") || root->hasTagName ("NoiseMu6ixStateV104")))
         applyStateXml (*root, nullptr);
 }
 

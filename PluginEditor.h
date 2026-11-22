@@ -3,7 +3,26 @@
 #include "PluginProcessor.h"
 #include <functional>
 
-// ==================== Kontakt-Style Individual Group Boxes Grid ====================
+// ==================== Kontakt-Style Colored Piano Keyboard ====================
+class ColoredMidiKeyboardComponent : public juce::MidiKeyboardComponent
+{
+public:
+    ColoredMidiKeyboardComponent (NoiseMu6ixSamplerAudioProcessor& p, juce::MidiKeyboardState& state);
+
+    int activeFilterGroupIdx = 0; // -1 = all groups
+
+protected:
+    void drawWhiteNote (int midiNoteNumber, juce::Graphics& g, juce::Rectangle<float> area,
+                        bool isDown, bool isOver, juce::Colour lineColour, juce::Colour textColour) override;
+    void drawBlackNote (int midiNoteNumber, juce::Graphics& g, juce::Rectangle<float> area,
+                        bool isDown, bool isOver, juce::Colour noteFillColour) override;
+
+private:
+    bool getKeyColourInfo (int note, juce::Colour& outCol, bool& isKeyswitch) const;
+    NoiseMu6ixSamplerAudioProcessor& processor;
+};
+
+// ==================== Kontakt-Style Individual Group Cards ====================
 class GroupCardsComponent : public juce::Component
 {
 public:
@@ -19,7 +38,7 @@ private:
     NoiseMu6ixSamplerAudioProcessor& processor;
 };
 
-// ==================== Simplified & Smooth Mapping Editor Grid ====================
+// ==================== Mapping Editor Grid ====================
 class MappingGridComponent : public juce::Component,
                              public juce::FileDragAndDropTarget
 {
@@ -35,7 +54,7 @@ public:
     void filesDropped (const juce::StringArray& files, int x, int y) override;
 
     int selectedZoneIdx = -1;
-    int activeGroupFilter = -1;
+    int activeGroupFilter = 0; // Default: show ONLY selected group! (-1 = All)
     int targetDropGroup = 0;
     std::function<void()> onZoneChanged;
 
@@ -103,15 +122,18 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
 };
 
-// ==================== Left File Browser List ====================
+// ==================== Left Sidebar Lists (Libraries + Files) ====================
 class FileBrowserListModel : public juce::ListBoxModel
 {
 public:
     juce::Array<juce::File> files;
+    bool isLibraryStyle = false;
     std::function<void (const juce::File&)> onFileDoubleClicked;
+    std::function<void (const juce::File&)> onFileClicked;
 
     int getNumRows() override { return files.size(); }
     void paintListBoxItem (int row, juce::Graphics& g, int w, int h, bool selected) override;
+    void listBoxItemClicked (int row, const juce::MouseEvent&) override;
     void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override;
 };
 
@@ -136,6 +158,7 @@ public:
 
 private:
     void updateModeVisibility();
+    void updateSidebarVisibility();
     void refreshGroupUI();
     void refreshSelectedZoneUI();
     void refreshFXUI();
@@ -143,51 +166,71 @@ private:
     void applyGroupInspector();
     void applyFXToProcessor();
     void browseLocalFolder();
+    void addLibraryDialog();
+    void loadSavedLibrariesList();
+    void saveLibrariesList();
+    juce::File getLibraryConfigFile() const;
     void layoutScrollableRack (int width);
 
     NoiseMu6ixSamplerAudioProcessor& processor;
     std::unique_ptr<juce::FileChooser> fileChooser;
 
     bool inEditMode = true;
+    bool sidebarShowLibraries = true;
     bool customizeFrontUI = true;
     int selectedGroupIdx = 0;
 
-    // Top Header Bar
+    // Clean Top Header Bar (Load WAVs & Auto-Map REMOVED!)
     juce::TextButton modeToggleBtn { "Front Panel" };
     juce::TextButton saveInstBtn   { "Save .nm6i" };
     juce::TextButton loadInstBtn   { "Load .nm6i" };
-    juce::TextButton loadFilesBtn  { "Load WAVs" };
-    juce::TextButton loadFolderBtn { "Auto-Map" };
-    juce::Label voicesLabel { {}, "Voices: 0" };
+    juce::Label voicesLabel        { {}, "Voices: 0" };
 
-    // Left Sidebar: File Browser
-    juce::TextButton browseFolderBtn { "Open Folder..." };
+    // Left Sidebar: Libraries & Files Tabs
+    juce::TextButton sideLibTabBtn   { "Libraries" };
+    juce::TextButton sideFilesTabBtn { "Files" };
+
+    // Libraries Panel
+    juce::TextButton addLibraryBtn    { "+ Add Library" };
+    juce::TextButton removeLibraryBtn { "- Remove" };
+    FileBrowserListModel libraryListModel;
+    juce::ListBox libraryListBox { "LibraryList", &libraryListModel };
+
+    // Files Panel
+    juce::TextButton browseFolderBtn    { "Open Folder..." };
     juce::TextButton addSelectedFileBtn { "+ Add to Grid" };
-    juce::Label folderPathLabel { {}, "Select sample folder" };
+    juce::Label folderPathLabel         { {}, "Select sample folder" };
     FileBrowserListModel fileListModel;
     juce::ListBox fileListBox { "FileList", &fileListModel };
 
-    // Scrollable Edit Mode Viewport (One-by-one vertical Kontakt Rack!)
+    // Scrollable Edit Mode Viewport
     juce::Viewport editViewport;
     EditRackContent editRack;
 
-    // --- Section 1: Group Editor (Individual Kontakt Cards + Unlimited RR ON/OFF) ---
-    juce::TextButton addGroupBtn    { "+ Add Group" };
-    juce::TextButton deleteGroupBtn { "- Delete" };
-    juce::TextButton rrToggleBtn    { "Round Robin: ON (Unlimited)" };
+    // --- Section 1: Group Editor (Individual Cards + Unlimited RR + Keyswitches) ---
+    juce::TextButton addGroupBtn     { "+ Add Group" };
+    juce::TextButton deleteGroupBtn  { "- Delete" };
+    juce::TextButton rrToggleBtn     { "RR: ON (Unlimited)" };
     juce::ComboBox   rrModeBox;
-    juce::ToggleButton filterByGroupBtn { "Selected Group Only" };
+    juce::TextButton ksMasterBtn     { "Keyswitch: OFF" };
+    juce::ToggleButton showAllGroupsBtn { "Show All Groups" };
     GroupCardsComponent groupCards;
 
     juce::Label grpNameLabel;
     juce::ToggleButton groupSoloBtn { "Solo" };
     juce::ToggleButton groupMuteBtn { "Mute" };
     juce::Slider grpVolSlider, grpPanSlider, grpTuneSlider;
-    juce::Label grpVolLbl { {}, "Vol dB" }, grpPanLbl { {}, "Pan" }, grpTuneLbl { {}, "Tune" };
+    juce::Label grpVolLbl { {}, "Vol" }, grpPanLbl { {}, "Pan" }, grpTuneLbl { {}, "Tune" };
 
-    // --- Section 2: Mapping Editor (Easy Drag Grid) ---
+    // Per-Group Keyswitch Settings + Color Picker
+    juce::ToggleButton grpKSEnabledBtn { "Group KS" };
+    juce::Slider grpKSNoteSlider;
+    juce::Label grpKSNoteLbl { {}, "KS Key" };
+    juce::ComboBox grpKSColorBox;
+
+    // --- Section 2: Mapping Editor ---
     MappingGridComponent mappingGrid;
-    juce::TextButton autoSpreadBtn { "Auto-Spread Keys" };
+    juce::TextButton autoSpreadBtn { "Auto-Spread" };
     juce::TextButton delZoneBtn    { "Del Zone" };
     juce::Label selZoneNameLbl     { {}, "Sample: (click a zone on grid)" };
     juce::Slider zRootSlider, zLowKSlider, zHighKSlider, zLowVSlider, zHighVSlider;
@@ -196,7 +239,7 @@ private:
                 zLowVLbl { {}, "Low V" }, zHighVLbl { {}, "High V" },
                 zVolLbl { {}, "Vol dB" }, zPanLbl { {}, "Pan" }, zTuneLbl { {}, "Tune" };
 
-    // --- Section 3: Wave Editor (Syncs directly with Mapping Editor!) ---
+    // --- Section 3: Wave Editor ---
     WaveEditorComponent waveEditor;
     juce::ToggleButton loopToggle { "Long / Loop" };
     juce::TextButton autoLoopBtn  { "Auto-Loop (Zero-Cross)" };
@@ -227,8 +270,8 @@ private:
     juce::TextButton toggleCustomizeBtn { "Done Customizing" };
     std::vector<std::unique_ptr<CustomMacroSlot>> macroSlots;
 
-    // Bottom Piano Keyboard
-    juce::MidiKeyboardComponent keyboard;
+    // Bottom Kontakt-Style Colored Piano Keyboard (Matches Grid Width 1:1!)
+    ColoredMidiKeyboardComponent keyboard;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NoiseMu6ixSamplerAudioProcessorEditor)
 };

@@ -9,10 +9,15 @@ struct SampleGroup
 {
     juce::String name = "Group 1";
     float volumeDb = 0.0f;
-    float pan = 0.0f;      // -1.0 to 1.0
-    float tuneSemi = 0.0f; // -24 to +24
+    float pan = 0.0f;
+    float tuneSemi = 0.0f;
     bool solo = false;
     bool mute = false;
+
+    // Keyswitch support per group
+    bool keyswitchEnabled = false;
+    int keyswitchNote = 24;        // Default C1
+    int keyswitchColorIdx = 0;     // 0=Red, 1=Green, 2=Yellow, 3=Purple, 4=Orange, 5=Cyan
 };
 
 struct SampleZone
@@ -78,7 +83,7 @@ struct FXSettings
     std::atomic<float> eqHighDb { 0.0f };
 
     std::atomic<bool> filterOn { true };
-    std::atomic<int> filterType { 0 }; // 0=LP, 1=HP, 2=BP
+    std::atomic<int> filterType { 0 };
     std::atomic<float> filterCutoff { 1.0f };
     std::atomic<float> filterRes { 0.1f };
 
@@ -149,21 +154,21 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
-    // Monolith Compressed Instrument (.nm6i) Save / Load
     bool saveMonolithInstrument (const juce::File& targetFile);
     bool loadMonolithInstrument (const juce::File& sourceFile);
 
-    // Group & Zone Management
     int addGroup (const juce::String& name = {});
     void removeGroup (int groupIdx);
     void loadSampleFile (const juce::File& file, int targetGroupIdx = 0, bool autoMapName = true, int dropNote = -1);
     void loadSampleFolder (const juce::File& folder, int targetGroupIdx = 0);
-    void autoSpreadKeyRanges();
+    void autoSpreadKeyRanges (int onlyGroupIdx = -1);
     void removeZone (int index);
     void clearAllZones();
 
     static int findNearestZeroCrossing (const juce::AudioBuffer<float>& buf, int targetSample);
     void autoDetectLoop (std::shared_ptr<SampleZone> zone);
+
+    static juce::Colour getKeyswitchPaletteColour (int idx);
 
     juce::CriticalSection dataLock;
     std::vector<SampleGroup> groups;
@@ -172,6 +177,11 @@ public:
     // Unlimited Round Robin ON/OFF + Mode (0 = Cycle, 1 = No-Repeat Random)
     std::atomic<bool> rrEnabled { true };
     std::atomic<int> rrMode { 0 };
+
+    // Keyswitch Master Switch & Active Keyswitch Note
+    std::atomic<bool> keyswitchMasterOn { false };
+    std::atomic<int> activeKeyswitchNote { 24 };
+
     std::atomic<int> activeVoicesCount { 0 };
     FXSettings fx;
 

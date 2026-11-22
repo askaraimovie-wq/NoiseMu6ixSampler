@@ -2,12 +2,109 @@
 #include <cmath>
 #include <algorithm>
 
+// ==================== ColoredMidiKeyboardComponent ====================
+ColoredMidiKeyboardComponent::ColoredMidiKeyboardComponent (NoiseMu6ixSamplerAudioProcessor& p,
+                                                            juce::MidiKeyboardState& state)
+    : juce::MidiKeyboardComponent (state, juce::MidiKeyboardComponent::horizontalKeyboard),
+      processor (p)
+{
+    setAvailableRange (24, 96);
+    setScrollButtonsVisible (false);
+}
+
+bool ColoredMidiKeyboardComponent::getKeyColourInfo (int note, juce::Colour& outCol, bool& isKeyswitch) const
+{
+    const juce::ScopedTryLock sl (processor.dataLock);
+    if (!sl.isLocked()) return false;
+
+    // 1. Check if this note is a Keyswitch for any group
+    if (processor.keyswitchMasterOn.load())
+    {
+        for (const auto& g : processor.groups)
+        {
+            if (g.keyswitchEnabled && g.keyswitchNote == note)
+            {
+                isKeyswitch = true;
+                outCol = NoiseMu6ixSamplerAudioProcessor::getKeyswitchPaletteColour (g.keyswitchColorIdx);
+                if (processor.activeKeyswitchNote.load() == note)
+                    outCol = outCol.brighter (0.35f);
+                return true;
+            }
+        }
+    }
+
+    // 2. Check if this note has a mapped sample (Kontakt Blue!)
+    for (const auto& z : processor.zones)
+    {
+        if (activeFilterGroupIdx >= 0 && z->groupIndex != activeFilterGroupIdx)
+            continue;
+        if (note >= z->lowKey && note <= z->highKey)
+        {
+            isKeyswitch = false;
+            outCol = juce::Colour (0xff2b82e3); // Kontakt Blue
+            return true;
+        }
+    }
+    return false;
+}
+
+void ColoredMidiKeyboardComponent::drawWhiteNote (int midiNoteNumber, juce::Graphics& g,
+                                                  juce::Rectangle<float> area,
+                                                  bool isDown, bool isOver,
+                                                  juce::Colour lineColour, juce::Colour textColour)
+{
+    juce::Colour c = juce::Colour (0xfff0f2f5);
+    juce::Colour customCol;
+    bool isKS = false;
+
+    if (getKeyColourInfo (midiNoteNumber, customCol, isKS))
+        c = customCol;
+
+    if (isDown)      c = c.brighter (0.45f);
+    else if (isOver) c = c.interpolatedWith (juce::Colours::white, 0.2f);
+
+    g.setColour (c);
+    g.fillRect (area);
+
+    auto text = getWhiteNoteText (midiNoteNumber);
+    if (text.isNotEmpty())
+    {
+        g.setColour (isKS || c != juce::Colour (0xfff0f2f5) ? juce::Colours::white : textColour);
+        g.setFont (juce::jmin (10.5f, area.getWidth() * 0.7f));
+        g.drawText (text, area.withTrimmedBottom (2.0f), juce::Justification::centredBottom, false);
+    }
+
+    g.setColour (lineColour);
+    g.drawRect (area, 0.7f);
+}
+
+void ColoredMidiKeyboardComponent::drawBlackNote (int midiNoteNumber, juce::Graphics& g,
+                                                  juce::Rectangle<float> area,
+                                                  bool isDown, bool isOver,
+                                                  juce::Colour noteFillColour)
+{
+    juce::Colour c = noteFillColour;
+    juce::Colour customCol;
+    bool isKS = false;
+
+    if (getKeyColourInfo (midiNoteNumber, customCol, isKS))
+        c = customCol.darker (0.2f);
+
+    if (isDown)      c = c.brighter (0.5f);
+    else if (isOver) c = c.brighter (0.2f);
+
+    g.setColour (c);
+    g.fillRect (area);
+    g.setColour (juce::Colours::black);
+    g.drawRect (area, 0.7f);
+}
+
 // ==================== GroupCardsComponent ====================
 GroupCardsComponent::GroupCardsComponent (NoiseMu6ixSamplerAudioProcessor& p) : processor (p) {}
 
 juce::Rectangle<int> GroupCardsComponent::getCardRect (int idx) const
 {
-    int cols = std::max (1, getWidth() / 145);
+    int cols = std::max (1, getWidth() / 135);
     int cardW = (getWidth() - 8) / cols;
     int cardH = 38;
     int r = idx / cols;
@@ -37,19 +134,28 @@ void GroupCardsComponent::paint (juce::Graphics& g)
         g.setColour (isSel ? juce::Colour (0xffd9a05b) : juce::Colour (0xff2e323c));
         g.fillRoundedRectangle (r.toFloat(), 4.0f);
 
+        // Keyswitch color strip on left of card if enabled
+        if (grp.keyswitchEnabled)
+        {
+            g.setColour (NoiseMu6ixSamplerAudioProcessor::getKeyswitchPaletteColour (grp.keyswitchColorIdx));
+            g.fillRoundedRectangle ((float)r.getX(), (float)r.getY(), 5.0f, (float)r.getHeight(), 2.0f);
+        }
+
         g.setColour (isSel ? juce::Colours::white : juce::Colour (0xff555a66));
         g.drawRoundedRectangle (r.toFloat(), 4.0f, isSel ? 1.6f : 1.0f);
 
         g.setColour (isSel ? juce::Colour (0xff111317) : juce::Colours::white);
-        g.setFont (juce::Font (12.5f, isSel ? juce::Font::bold : juce::Font::plain));
-        g.drawText (grp.name, r.reduced (8, 2).removeFromTop (18), juce::Justification::centredLeft, true);
+        g.setFont (juce::Font (12.0f, isSel ? juce::Font::bold : juce::Font::plain));
+        g.drawText (grp.name, r.reduced (10, 2).removeFromTop (18), juce::Justification::centredLeft, true);
 
-        juce::String sub = juce::String (zCount) + " zones";
+        juce::String sub = juce::String (zCount) + "z";
+        if (grp.keyswitchEnabled)
+            sub += " | KS:" + juce::MidiMessage::getMidiNoteName (grp.keyswitchNote, true, true, 3);
         if (grp.solo) sub += " [S]";
         if (grp.mute) sub += " [M]";
         g.setColour (isSel ? juce::Colour (0xff2c2419) : juce::Colour (0xffa8adb8));
-        g.setFont (10.5f);
-        g.drawText (sub, r.reduced (8, 2).removeFromBottom (14), juce::Justification::centredLeft, true);
+        g.setFont (10.0f);
+        g.drawText (sub, r.reduced (10, 2).removeFromBottom (14), juce::Justification::centredLeft, true);
     }
 }
 
@@ -102,7 +208,6 @@ MappingGridComponent::DragMode MappingGridComponent::hitTestDragMode (const juce
 {
     float edgeX = std::min (8.0f, r.getWidth() * 0.25f);
     float edgeY = std::min (8.0f, r.getHeight() * 0.25f);
-
     if (std::abs (pt.x - r.getX()) <= edgeX)           return DragMode::LeftEdge;
     if (std::abs (pt.x - r.getRight()) <= edgeX)       return DragMode::RightEdge;
     if (std::abs (pt.y - r.getY()) <= edgeY)           return DragMode::TopEdge;
@@ -166,11 +271,15 @@ void MappingGridComponent::paint (juce::Graphics& g)
         g.drawHorizontalLine ((int)((1.0f - (float)v / 127.0f) * h), 0.0f, w);
 
     const juce::ScopedLock sl (processor.dataLock);
-    if (processor.zones.empty())
+    int visibleCount = 0;
+    for (auto& z : processor.zones)
+        if (activeGroupFilter < 0 || z->groupIndex == activeGroupFilter) ++visibleCount;
+
+    if (visibleCount == 0)
     {
         g.setColour (juce::Colour (0xffb0b5c0));
-        g.setFont (14.0f);
-        g.drawFittedText ("Drag & Drop WAV Samples Here (Edges = Resize Key/Velocity | Center = Move)",
+        g.setFont (13.0f);
+        g.drawFittedText ("Drag & Drop WAV Samples Here for this Group (or use Left Files Browser)",
                           getLocalBounds(), juce::Justification::centred, 2);
         return;
     }
@@ -190,7 +299,6 @@ void MappingGridComponent::paint (juce::Graphics& g)
         g.setColour (isSel ? juce::Colours::white : col.brighter (0.3f));
         g.drawRoundedRectangle (rect, 2.0f, isSel ? 2.0f : 1.0f);
 
-        // Visual grab handles on selected zone for super easy dragging!
         if (isSel)
         {
             g.setColour (juce::Colours::white);
@@ -207,7 +315,7 @@ void MappingGridComponent::paint (juce::Graphics& g)
         if (rect.getWidth() > 36 && rect.getHeight() > 14)
         {
             g.setColour (juce::Colours::black);
-            g.setFont (juce::Font (11.0f, isSel ? juce::Font::bold : juce::Font::plain));
+            g.setFont (juce::Font (10.5f, isSel ? juce::Font::bold : juce::Font::plain));
             g.drawFittedText (z->name, rect.toNearestInt().reduced (4, 2), juce::Justification::topLeft, 1);
         }
     }
@@ -266,7 +374,7 @@ void MappingGridComponent::mouseDrag (const juce::MouseEvent& e)
             z->lowKey = newLowK; z->highKey = newLowK + spanK;
             z->rootNote = juce::jlimit (0, 127, origRoot + (newLowK - origLowK));
 
-            if (std::abs (dVel) > 3) // small deadzone so horizontal moves stay clean
+            if (std::abs (dVel) > 3)
             {
                 int spanV = origHighV - origLowV;
                 int newLowV = juce::jlimit (0, 127 - spanV, origLowV + dVel);
@@ -315,7 +423,7 @@ void WaveEditorComponent::paint (juce::Graphics& g)
     if (!zone || zone->buffer.getNumSamples() == 0)
     {
         g.setColour (juce::Colours::lightgrey);
-        g.setFont (14.0f);
+        g.setFont (13.0f);
         g.drawFittedText ("Click any Sample Zone in Mapping Editor above to edit its Waveform & Auto-Loop",
                           getLocalBounds(), juce::Justification::centred, 1);
         return;
@@ -503,10 +611,36 @@ void CustomMacroSlot::resized()
 void FileBrowserListModel::paintListBoxItem (int row, juce::Graphics& g, int w, int h, bool selected)
 {
     if (row < 0 || row >= files.size()) return;
-    g.fillAll (selected ? juce::Colour (0xffd9a05b).withAlpha (0.35f) : juce::Colour (0xff24262b));
-    g.setColour (selected ? juce::Colours::white : juce::Colour (0xffcccccc));
-    g.setFont (12.0f);
-    g.drawText (files[row].getFileName(), 6, 0, w - 12, h, juce::Justification::centredLeft, true);
+    if (isLibraryStyle)
+    {
+        auto r = juce::Rectangle<int> (3, 2, w - 6, h - 4);
+        g.setColour (selected ? juce::Colour (0xffb86b28) : juce::Colour (0xff2c303a));
+        g.fillRoundedRectangle (r.toFloat(), 4.0f);
+        g.setColour (selected ? juce::Colours::white : juce::Colour (0xff4d5260));
+        g.drawRoundedRectangle (r.toFloat(), 4.0f, 1.0f);
+
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::Font (12.0f, juce::Font::bold));
+        g.drawText (files[row].getFileNameWithoutExtension(), r.reduced (8, 2).removeFromTop (18),
+                    juce::Justification::centredLeft, true);
+        g.setColour (juce::Colour (0xffc0c4ce));
+        g.setFont (9.5f);
+        g.drawText (".nm6i Instrument", r.reduced (8, 2).removeFromBottom (13),
+                    juce::Justification::centredLeft, true);
+    }
+    else
+    {
+        g.fillAll (selected ? juce::Colour (0xffd9a05b).withAlpha (0.35f) : juce::Colour (0xff24262b));
+        g.setColour (selected ? juce::Colours::white : juce::Colour (0xffcccccc));
+        g.setFont (11.5f);
+        g.drawText (files[row].getFileName(), 6, 0, w - 12, h, juce::Justification::centredLeft, true);
+    }
+}
+
+void FileBrowserListModel::listBoxItemClicked (int row, const juce::MouseEvent&)
+{
+    if (row >= 0 && row < files.size() && onFileClicked)
+        onFileClicked (files[row]);
 }
 
 void FileBrowserListModel::listBoxItemDoubleClicked (int row, const juce::MouseEvent&)
@@ -523,26 +657,29 @@ void EditRackContent::paint (juce::Graphics& g)
 
     auto drawSectionHeader = [&](int y, const juce::String& title) {
         g.setColour (juce::Colour (0xff1a1d23));
-        g.fillRoundedRectangle (4.0f, (float)y, (float)(w - 8), 24.0f, 4.0f);
+        g.fillRoundedRectangle (4.0f, (float)y, (float)(w - 8), 22.0f, 4.0f);
         g.setColour (juce::Colour (0xffd9a05b));
-        g.setFont (juce::Font (13.0f, juce::Font::bold));
-        g.drawText (title, 12, y, w - 24, 24, juce::Justification::centredLeft);
+        g.setFont (juce::Font (12.0f, juce::Font::bold));
+        g.drawText (title, 10, y, w - 20, 22, juce::Justification::centredLeft);
     };
 
-    drawSectionHeader (4,   "1. GROUP EDITOR  (Click + to add individual Groups | Unlimited Round Robin)");
-    drawSectionHeader (228, "2. MAPPING EDITOR  (Drag edges to resize Key/Velocity | Click zone to edit Wave below)");
-    drawSectionHeader (588, "3. WAVE EDITOR  (Zero-Cross Auto-Loop & Sample Start/End)");
-    drawSectionHeader (900, "4. FX & ADSR RACK  (EQ, Filter, Drive, Chorus, Stereo Delay, Reverb, ADSR)");
+    drawSectionHeader (4,   "1. GROUP EDITOR  (Click Group to filter Mapping Grid | Unlimited RR | Keyswitches)");
+    drawSectionHeader (236, "2. MAPPING EDITOR  (Shows Selected Group | Blue Keys = Mapped | Colored = Keyswitch)");
+    drawSectionHeader (550, "3. WAVE EDITOR  (Zero-Cross Auto-Loop & Sample Start/End)");
+    drawSectionHeader (836, "4. FX & ADSR RACK  (EQ, Filter, Drive, Chorus, Stereo Delay, Reverb, ADSR)");
 }
 
 // ==================== Main Editor ====================
 NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (NoiseMu6ixSamplerAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p), groupCards (p), mappingGrid (p),
-      keyboard (p.keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard)
+      keyboard (p, p.keyboardState)
 {
-    setSize (1160, 720);
+    // Compact, clean size that fits laptop screens + Resizable!
+    setResizable (true, true);
+    setResizeLimits (860, 540, 1440, 920);
+    setSize (980, 620);
 
-    // Header
+    // Clean Header (NO Load WAVs / NO Auto-Map buttons!)
     modeToggleBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffb86b28));
     modeToggleBtn.onClick = [this] {
         inEditMode = !inEditMode;
@@ -560,7 +697,16 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
                 if (f != juce::File{})
                 {
                     if (!f.hasFileExtension (".nm6i")) f = f.withFileExtension (".nm6i");
-                    processor.saveMonolithInstrument (f);
+                    if (processor.saveMonolithInstrument (f))
+                    {
+                        if (!libraryListModel.files.contains (f))
+                        {
+                            libraryListModel.files.add (f);
+                            saveLibrariesList();
+                            libraryListBox.updateContent();
+                            libraryListBox.repaint();
+                        }
+                    }
                 }
             });
     };
@@ -573,37 +719,58 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
             [this](const juce::FileChooser& fc) {
                 if (processor.loadMonolithInstrument (fc.getResult()))
                 {
-                    refreshGroupUI(); refreshSelectedZoneUI(); refreshFXUI(); mappingGrid.repaint();
+                    selectedGroupIdx = 0;
+                    mappingGrid.selectedZoneIdx = -1;
+                    refreshGroupUI(); refreshSelectedZoneUI(); refreshFXUI();
+                    mappingGrid.repaint(); keyboard.repaint();
                 }
             });
     };
     addAndMakeVisible (loadInstBtn);
 
-    loadFilesBtn.onClick = [this] {
-        fileChooser = std::make_unique<juce::FileChooser> ("Select WAV Samples", juce::File{}, "*.wav;*.flac;*.aif");
-        fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectMultipleItems,
-            [this](const juce::FileChooser& fc) {
-                for (auto& f : fc.getResults()) processor.loadSampleFile (f, selectedGroupIdx, true, -1);
-                refreshGroupUI(); refreshSelectedZoneUI(); mappingGrid.repaint();
-            });
-    };
-    addAndMakeVisible (loadFilesBtn);
-
-    loadFolderBtn.onClick = [this] {
-        fileChooser = std::make_unique<juce::FileChooser> ("Select Sample Folder to Auto-Map");
-        fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
-            [this](const juce::FileChooser& fc) {
-                processor.loadSampleFolder (fc.getResult(), selectedGroupIdx);
-                refreshGroupUI(); refreshSelectedZoneUI(); mappingGrid.repaint();
-            });
-    };
-    addAndMakeVisible (loadFolderBtn);
-
     voicesLabel.setJustificationType (juce::Justification::centredRight);
     voicesLabel.setColour (juce::Label::textColourId, juce::Colour (0xffd9a05b));
     addAndMakeVisible (voicesLabel);
 
-    // Left Sidebar
+    // Left Sidebar Tabs: Libraries | Files
+    sideLibTabBtn.onClick   = [this] { sidebarShowLibraries = true;  updateSidebarVisibility(); };
+    sideFilesTabBtn.onClick = [this] { sidebarShowLibraries = false; updateSidebarVisibility(); };
+    addAndMakeVisible (sideLibTabBtn);
+    addAndMakeVisible (sideFilesTabBtn);
+
+    // Libraries Panel
+    addLibraryBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff2f6642));
+    addLibraryBtn.onClick = [this] { addLibraryDialog(); };
+    addAndMakeVisible (addLibraryBtn);
+
+    removeLibraryBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff5c2b2b));
+    removeLibraryBtn.onClick = [this] {
+        int row = libraryListBox.getSelectedRow();
+        if (row >= 0 && row < libraryListModel.files.size())
+        {
+            libraryListModel.files.remove (row);
+            saveLibrariesList();
+            libraryListBox.updateContent();
+            libraryListBox.repaint();
+        }
+    };
+    addAndMakeVisible (removeLibraryBtn);
+
+    libraryListModel.isLibraryStyle = true;
+    libraryListModel.onFileDoubleClicked = [this](const juce::File& f) {
+        if (processor.loadMonolithInstrument (f))
+        {
+            selectedGroupIdx = 0;
+            mappingGrid.selectedZoneIdx = -1;
+            refreshGroupUI(); refreshSelectedZoneUI(); refreshFXUI();
+            mappingGrid.repaint(); keyboard.repaint();
+        }
+    };
+    libraryListBox.setRowHeight (40);
+    libraryListBox.setColour (juce::ListBox::backgroundColourId, juce::Colour (0xff1a1c21));
+    addAndMakeVisible (libraryListBox);
+
+    // Files Panel
     browseFolderBtn.onClick = [this] { browseLocalFolder(); };
     addAndMakeVisible (browseFolderBtn);
 
@@ -616,12 +783,13 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
             else processor.loadSampleFile (f, selectedGroupIdx, true, -1);
             const juce::ScopedLock sl (processor.dataLock);
             mappingGrid.selectedZoneIdx = (int)processor.zones.size() - 1;
-            refreshGroupUI(); refreshSelectedZoneUI(); refreshFXUI(); mappingGrid.repaint();
+            refreshGroupUI(); refreshSelectedZoneUI(); refreshFXUI();
+            mappingGrid.repaint(); keyboard.repaint();
         }
     };
     addAndMakeVisible (addSelectedFileBtn);
     folderPathLabel.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
-    folderPathLabel.setFont (11.5f);
+    folderPathLabel.setFont (11.0f);
     addAndMakeVisible (folderPathLabel);
 
     fileListModel.onFileDoubleClicked = [this](const juce::File& f) {
@@ -629,10 +797,11 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
         else processor.loadSampleFile (f, selectedGroupIdx, true, -1);
         const juce::ScopedLock sl (processor.dataLock);
         mappingGrid.selectedZoneIdx = (int)processor.zones.size() - 1;
-        refreshGroupUI(); refreshSelectedZoneUI(); refreshFXUI(); mappingGrid.repaint();
+        refreshGroupUI(); refreshSelectedZoneUI(); refreshFXUI();
+        mappingGrid.repaint(); keyboard.repaint();
     };
     fileListBox.setRowHeight (22);
-    fileListBox.setColour (juce::ListBox::backgroundColourId, juce::Colour (0xff1f2126));
+    fileListBox.setColour (juce::ListBox::backgroundColourId, juce::Colour (0xff1a1c21));
     addAndMakeVisible (fileListBox);
 
     // Scrollable Edit Viewport
@@ -640,13 +809,17 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     editViewport.setScrollBarsShown (true, false);
     addAndMakeVisible (editViewport);
 
-    // --- Section 1: Group Editor inside editRack ---
+    // --- Section 1: Group Editor ---
     addGroupBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff2f6642));
     addGroupBtn.onClick = [this] {
         selectedGroupIdx = processor.addGroup();
         groupCards.selectedGroupIdx = selectedGroupIdx;
         mappingGrid.targetDropGroup = selectedGroupIdx;
-        refreshGroupUI();
+        mappingGrid.activeGroupFilter = showAllGroupsBtn.getToggleState() ? -1 : selectedGroupIdx;
+        keyboard.activeFilterGroupIdx = mappingGrid.activeGroupFilter;
+        mappingGrid.selectedZoneIdx = -1;
+        refreshGroupUI(); refreshSelectedZoneUI();
+        mappingGrid.repaint(); keyboard.repaint();
     };
     editRack.addAndMakeVisible (addGroupBtn);
 
@@ -656,37 +829,52 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
         selectedGroupIdx = std::max (0, selectedGroupIdx - 1);
         groupCards.selectedGroupIdx = selectedGroupIdx;
         mappingGrid.targetDropGroup = selectedGroupIdx;
-        refreshGroupUI();
-        mappingGrid.repaint();
+        mappingGrid.activeGroupFilter = showAllGroupsBtn.getToggleState() ? -1 : selectedGroupIdx;
+        keyboard.activeFilterGroupIdx = mappingGrid.activeGroupFilter;
+        mappingGrid.selectedZoneIdx = -1;
+        refreshGroupUI(); refreshSelectedZoneUI();
+        mappingGrid.repaint(); keyboard.repaint();
     };
     editRack.addAndMakeVisible (deleteGroupBtn);
 
     rrToggleBtn.onClick = [this] {
-        bool next = !processor.rrEnabled.load();
-        processor.rrEnabled.store (next);
+        processor.rrEnabled.store (!processor.rrEnabled.load());
         refreshGroupUI();
     };
     editRack.addAndMakeVisible (rrToggleBtn);
 
-    rrModeBox.addItem ("RR Mode: Cycle", 1);
-    rrModeBox.addItem ("RR Mode: No-Repeat Random", 2);
+    rrModeBox.addItem ("RR: Cycle", 1);
+    rrModeBox.addItem ("RR: No-Repeat", 2);
     rrModeBox.setSelectedId (processor.rrMode.load() + 1, juce::dontSendNotification);
     rrModeBox.onChange = [this] { processor.rrMode.store (rrModeBox.getSelectedId() - 1); };
     editRack.addAndMakeVisible (rrModeBox);
 
-    filterByGroupBtn.onClick = [this] {
-        mappingGrid.activeGroupFilter = filterByGroupBtn.getToggleState() ? selectedGroupIdx : -1;
-        mappingGrid.repaint();
+    ksMasterBtn.onClick = [this] {
+        processor.keyswitchMasterOn.store (!processor.keyswitchMasterOn.load());
+        refreshGroupUI();
+        keyboard.repaint();
     };
-    editRack.addAndMakeVisible (filterByGroupBtn);
+    editRack.addAndMakeVisible (ksMasterBtn);
+
+    showAllGroupsBtn.setToggleState (false, juce::dontSendNotification);
+    showAllGroupsBtn.onClick = [this] {
+        mappingGrid.activeGroupFilter = showAllGroupsBtn.getToggleState() ? -1 : selectedGroupIdx;
+        keyboard.activeFilterGroupIdx = mappingGrid.activeGroupFilter;
+        mappingGrid.repaint();
+        keyboard.repaint();
+    };
+    editRack.addAndMakeVisible (showAllGroupsBtn);
 
     groupCards.onGroupSelected = [this](int idx) {
         selectedGroupIdx = idx;
         mappingGrid.targetDropGroup = idx;
-        if (filterByGroupBtn.getToggleState())
-            mappingGrid.activeGroupFilter = idx;
+        mappingGrid.activeGroupFilter = showAllGroupsBtn.getToggleState() ? -1 : idx;
+        keyboard.activeFilterGroupIdx = mappingGrid.activeGroupFilter;
+        mappingGrid.selectedZoneIdx = -1;
         refreshGroupUI();
+        refreshSelectedZoneUI();
         mappingGrid.repaint();
+        keyboard.repaint();
     };
     editRack.addAndMakeVisible (groupCards);
 
@@ -710,30 +898,56 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
         s.setRange (minV, maxV, step);
         s.setValue (defV, juce::dontSendNotification);
         s.setSliderStyle (juce::Slider::LinearHorizontal);
-        s.setTextBoxStyle (juce::Slider::TextBoxRight, false, 44, 20);
+        s.setTextBoxStyle (juce::Slider::TextBoxRight, false, 40, 18);
         s.onValueChange = std::move (cb);
         editRack.addAndMakeVisible (s);
         l.setJustificationType (juce::Justification::centredRight);
-        l.setFont (11.5f);
+        l.setFont (11.0f);
         editRack.addAndMakeVisible (l);
     };
     setupRackHSlider (grpVolSlider,  grpVolLbl,  -24, 12, 0.1, 0.0, [this]{ applyGroupInspector(); });
     setupRackHSlider (grpPanSlider,  grpPanLbl,  -1, 1, 0.01, 0.0,  [this]{ applyGroupInspector(); });
     setupRackHSlider (grpTuneSlider, grpTuneLbl, -24, 24, 0.1, 0.0, [this]{ applyGroupInspector(); });
 
-    // --- Section 2: Mapping Editor inside editRack ---
-    mappingGrid.onZoneChanged = [this] { refreshSelectedZoneUI(); groupCards.repaint(); };
+    // Per-Group Keyswitch & Color Picker
+    grpKSEnabledBtn.onClick = [this] { applyGroupInspector(); keyboard.repaint(); };
+    editRack.addAndMakeVisible (grpKSEnabledBtn);
+
+    grpKSNoteSlider.setRange (24, 96, 1);
+    grpKSNoteSlider.setValue (24, juce::dontSendNotification);
+    grpKSNoteSlider.setSliderStyle (juce::Slider::IncDecButtons);
+    grpKSNoteSlider.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 36, 20);
+    grpKSNoteSlider.onValueChange = [this] { applyGroupInspector(); keyboard.repaint(); };
+    editRack.addAndMakeVisible (grpKSNoteSlider);
+    grpKSNoteLbl.setFont (11.0f);
+    grpKSNoteLbl.setJustificationType (juce::Justification::centredRight);
+    editRack.addAndMakeVisible (grpKSNoteLbl);
+
+    grpKSColorBox.addItem ("Red",    1);
+    grpKSColorBox.addItem ("Green",  2);
+    grpKSColorBox.addItem ("Yellow", 3);
+    grpKSColorBox.addItem ("Purple", 4);
+    grpKSColorBox.addItem ("Orange", 5);
+    grpKSColorBox.addItem ("Cyan",   6);
+    grpKSColorBox.setSelectedId (1, juce::dontSendNotification);
+    grpKSColorBox.onChange = [this] { applyGroupInspector(); keyboard.repaint(); };
+    editRack.addAndMakeVisible (grpKSColorBox);
+
+    // --- Section 2: Mapping Editor ---
+    mappingGrid.onZoneChanged = [this] { refreshSelectedZoneUI(); groupCards.repaint(); keyboard.repaint(); };
     editRack.addAndMakeVisible (mappingGrid);
 
-    autoSpreadBtn.onClick = [this] { processor.autoSpreadKeyRanges(); mappingGrid.repaint(); refreshSelectedZoneUI(); };
+    autoSpreadBtn.onClick = [this] {
+        processor.autoSpreadKeyRanges (showAllGroupsBtn.getToggleState() ? -1 : selectedGroupIdx);
+        mappingGrid.repaint(); refreshSelectedZoneUI(); keyboard.repaint();
+    };
     delZoneBtn.onClick = [this] {
         if (mappingGrid.selectedZoneIdx >= 0)
         {
             processor.removeZone (mappingGrid.selectedZoneIdx);
             mappingGrid.selectedZoneIdx = -1;
-            mappingGrid.repaint();
-            refreshSelectedZoneUI();
-            groupCards.repaint();
+            mappingGrid.repaint(); refreshSelectedZoneUI();
+            groupCards.repaint(); keyboard.repaint();
         }
     };
     editRack.addAndMakeVisible (autoSpreadBtn);
@@ -743,10 +957,10 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     auto setupZoneNum = [this](juce::Slider& s, juce::Label& l, double minV, double maxV, double step, double defV) {
         s.setRange (minV, maxV, step); s.setValue (defV, juce::dontSendNotification);
         s.setSliderStyle (juce::Slider::IncDecButtons);
-        s.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 42, 20);
+        s.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 38, 19);
         s.onValueChange = [this] { applyZoneBarToSelected(); };
         editRack.addAndMakeVisible (s);
-        l.setJustificationType (juce::Justification::centred); l.setFont (11.0f);
+        l.setJustificationType (juce::Justification::centred); l.setFont (10.5f);
         editRack.addAndMakeVisible (l);
     };
     setupZoneNum (zRootSlider,  zRootLbl,  0, 127, 1, 60);
@@ -758,7 +972,7 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     setupZoneNum (zPanSlider,   zPanLbl,   -1, 1, 0.05, 0);
     setupZoneNum (zTuneSlider,  zTuneLbl,  -24, 24, 0.5, 0);
 
-    // --- Section 3: Wave Editor inside editRack ---
+    // --- Section 3: Wave Editor ---
     editRack.addAndMakeVisible (waveEditor);
     editRack.addAndMakeVisible (loopToggle);
     loopToggle.onClick = [this] {
@@ -795,7 +1009,7 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     });
     setupRackHSlider (zoomSlider, zoomLbl, 1.0, 16.0, 0.1, 1.0, [this] { waveEditor.setZoom ((float)zoomSlider.getValue()); });
 
-    // --- Section 4: FX & ADSR Rack inside editRack ---
+    // --- Section 4: FX & ADSR Rack ---
     auto setupFXToggle = [this](juce::ToggleButton& b) {
         b.onClick = [this] { applyFXToProcessor(); };
         editRack.addAndMakeVisible (b);
@@ -814,13 +1028,13 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
         s.setRange (minV, maxV, step);
         s.setValue (defV, juce::dontSendNotification);
         s.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 44, 15);
+        s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 42, 14);
         s.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xffd9a05b));
         s.setColour (juce::Slider::thumbColourId, juce::Colour (0xffd9a05b));
         s.onValueChange = [this] { applyFXToProcessor(); };
         editRack.addAndMakeVisible (s);
         l.setJustificationType (juce::Justification::centred);
-        l.setFont (11.0f);
+        l.setFont (10.5f);
         editRack.addAndMakeVisible (l);
     };
 
@@ -868,9 +1082,10 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
         macroSlots.push_back (std::move (slot));
     }
 
-    keyboard.setAvailableRange (24, 96);
     addAndMakeVisible (keyboard);
 
+    loadSavedLibrariesList();
+    updateSidebarVisibility();
     refreshGroupUI();
     refreshFXUI();
     updateModeVisibility();
@@ -880,6 +1095,68 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
 void NoiseMu6ixSamplerAudioProcessorEditor::timerCallback()
 {
     voicesLabel.setText ("Voices: " + juce::String (processor.activeVoicesCount.load()), juce::dontSendNotification);
+}
+
+juce::File NoiseMu6ixSamplerAudioProcessorEditor::getLibraryConfigFile() const
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                   .getChildFile ("NoiseMu6ixStudio");
+    dir.createDirectory();
+    return dir.getChildFile ("libraries.xml");
+}
+
+void NoiseMu6ixSamplerAudioProcessorEditor::loadSavedLibrariesList()
+{
+    libraryListModel.files.clear();
+    auto cfg = getLibraryConfigFile();
+    if (cfg.existsAsFile())
+    {
+        if (auto xml = juce::parseXML (cfg))
+        {
+            for (auto* el : xml->getChildIterator())
+            {
+                juce::File f (el->getStringAttribute ("path"));
+                if (f.existsAsFile())
+                    libraryListModel.files.add (f);
+            }
+        }
+    }
+    libraryListBox.updateContent();
+    libraryListBox.repaint();
+}
+
+void NoiseMu6ixSamplerAudioProcessorEditor::saveLibrariesList()
+{
+    juce::XmlElement root ("NoiseMu6ixLibraries");
+    for (auto& f : libraryListModel.files)
+    {
+        auto* el = root.createNewChildElement ("Lib");
+        el->setAttribute ("path", f.getFullPathName());
+    }
+    root.writeTo (getLibraryConfigFile());
+}
+
+void NoiseMu6ixSamplerAudioProcessorEditor::addLibraryDialog()
+{
+    fileChooser = std::make_unique<juce::FileChooser> ("Add .nm6i Library to Sidebar", juce::File{}, "*.nm6i");
+    fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectMultipleItems,
+        [this](const juce::FileChooser& fc) {
+            bool added = false;
+            for (auto& f : fc.getResults())
+            {
+                if (f.existsAsFile() && !libraryListModel.files.contains (f))
+                {
+                    libraryListModel.files.add (f);
+                    added = true;
+                }
+            }
+            if (added)
+            {
+                saveLibrariesList();
+                libraryListBox.updateContent();
+                libraryListBox.repaint();
+            }
+        });
 }
 
 void NoiseMu6ixSamplerAudioProcessorEditor::browseLocalFolder()
@@ -899,12 +1176,31 @@ void NoiseMu6ixSamplerAudioProcessorEditor::browseLocalFolder()
         });
 }
 
+void NoiseMu6ixSamplerAudioProcessorEditor::updateSidebarVisibility()
+{
+    sideLibTabBtn.setColour   (juce::TextButton::buttonColourId, sidebarShowLibraries  ? juce::Colour (0xffd9a05b) : juce::Colour (0xff323640));
+    sideFilesTabBtn.setColour (juce::TextButton::buttonColourId, !sidebarShowLibraries ? juce::Colour (0xffd9a05b) : juce::Colour (0xff323640));
+
+    addLibraryBtn.setVisible (sidebarShowLibraries);
+    removeLibraryBtn.setVisible (sidebarShowLibraries);
+    libraryListBox.setVisible (sidebarShowLibraries);
+
+    browseFolderBtn.setVisible (!sidebarShowLibraries);
+    folderPathLabel.setVisible (!sidebarShowLibraries);
+    fileListBox.setVisible (!sidebarShowLibraries);
+    addSelectedFileBtn.setVisible (!sidebarShowLibraries);
+}
+
 void NoiseMu6ixSamplerAudioProcessorEditor::refreshGroupUI()
 {
     bool rrOn = processor.rrEnabled.load();
-    rrToggleBtn.setButtonText (rrOn ? "Round Robin: ON (Unlimited)" : "Round Robin: OFF (Layer)");
+    rrToggleBtn.setButtonText (rrOn ? "RR: ON (Unlimited)" : "RR: OFF (Layer)");
     rrToggleBtn.setColour (juce::TextButton::buttonColourId, rrOn ? juce::Colour (0xff2a7a4b) : juce::Colour (0xff4a4e57));
     rrModeBox.setEnabled (rrOn);
+
+    bool ksOn = processor.keyswitchMasterOn.load();
+    ksMasterBtn.setButtonText (ksOn ? "Keyswitch: ON" : "Keyswitch: OFF");
+    ksMasterBtn.setColour (juce::TextButton::buttonColourId, ksOn ? juce::Colour (0xff8a3232) : juce::Colour (0xff4a4e57));
 
     const juce::ScopedLock sl (processor.dataLock);
     selectedGroupIdx = juce::jlimit (0, std::max (0, (int)processor.groups.size() - 1), selectedGroupIdx);
@@ -920,6 +1216,9 @@ void NoiseMu6ixSamplerAudioProcessorEditor::refreshGroupUI()
         grpVolSlider.setValue (g.volumeDb, juce::dontSendNotification);
         grpPanSlider.setValue (g.pan, juce::dontSendNotification);
         grpTuneSlider.setValue (g.tuneSemi, juce::dontSendNotification);
+        grpKSEnabledBtn.setToggleState (g.keyswitchEnabled, juce::dontSendNotification);
+        grpKSNoteSlider.setValue (g.keyswitchNote, juce::dontSendNotification);
+        grpKSColorBox.setSelectedId (g.keyswitchColorIdx + 1, juce::dontSendNotification);
     }
 }
 
@@ -928,11 +1227,14 @@ void NoiseMu6ixSamplerAudioProcessorEditor::applyGroupInspector()
     const juce::ScopedLock sl (processor.dataLock);
     if (selectedGroupIdx < 0 || selectedGroupIdx >= (int)processor.groups.size()) return;
     auto& g = processor.groups[(size_t)selectedGroupIdx];
-    g.solo     = groupSoloBtn.getToggleState();
-    g.mute     = groupMuteBtn.getToggleState();
-    g.volumeDb = (float)grpVolSlider.getValue();
-    g.pan      = (float)grpPanSlider.getValue();
-    g.tuneSemi = (float)grpTuneSlider.getValue();
+    g.solo              = groupSoloBtn.getToggleState();
+    g.mute              = groupMuteBtn.getToggleState();
+    g.volumeDb          = (float)grpVolSlider.getValue();
+    g.pan               = (float)grpPanSlider.getValue();
+    g.tuneSemi          = (float)grpTuneSlider.getValue();
+    g.keyswitchEnabled  = grpKSEnabledBtn.getToggleState();
+    g.keyswitchNote     = (int)grpKSNoteSlider.getValue();
+    g.keyswitchColorIdx = std::max (0, grpKSColorBox.getSelectedId() - 1);
     groupCards.repaint();
 }
 
@@ -977,6 +1279,7 @@ void NoiseMu6ixSamplerAudioProcessorEditor::applyZoneBarToSelected()
     z->pan      = (float)zPanSlider.getValue();
     z->tuneSemi = (float)zTuneSlider.getValue();
     mappingGrid.repaint();
+    keyboard.repaint();
 }
 
 void NoiseMu6ixSamplerAudioProcessorEditor::refreshFXUI()
@@ -1044,7 +1347,6 @@ void NoiseMu6ixSamplerAudioProcessorEditor::applyFXToProcessor()
 void NoiseMu6ixSamplerAudioProcessorEditor::updateModeVisibility()
 {
     editViewport.setVisible (inEditMode);
-
     bool showFront = !inEditMode;
     addMacroBtn.setVisible (showFront);
     toggleCustomizeBtn.setVisible (showFront);
@@ -1060,63 +1362,71 @@ void NoiseMu6ixSamplerAudioProcessorEditor::paint (juce::Graphics& g)
     g.fillAll (juce::Colour (0xff1b1d22));
 
     g.setColour (juce::Colour (0xff111317));
-    g.fillRect (0, 0, getWidth(), 46);
+    g.fillRect (0, 0, getWidth(), 42);
     g.setColour (juce::Colour (0xffd9a05b));
-    g.setFont (juce::Font (17.5f, juce::Font::bold));
-    g.drawText ("NoiseMu6ixSampler_v1.0.4", 12, 10, 260, 26, juce::Justification::centredLeft);
+    g.setFont (juce::Font (16.5f, juce::Font::bold));
+    g.drawText ("NoiseMu6ixSampler_v1.0.5", 10, 8, 240, 26, juce::Justification::centredLeft);
 
     g.setColour (juce::Colour (0xff23252b));
-    g.fillRect (0, 46, 220, getHeight() - 46);
+    g.fillRect (0, 42, 196, getHeight() - 42);
     g.setColour (juce::Colour (0xff3c4049));
-    g.drawVerticalLine (220, 46.0f, (float)getHeight());
+    g.drawVerticalLine (196, 42.0f, (float)getHeight());
 
     g.setColour (juce::Colour (0xff25282f));
-    g.fillRect (226, 52, getWidth() - 232, getHeight() - 148);
+    g.fillRect (202, 46, getWidth() - 208, getHeight() - 122);
     g.setColour (juce::Colour (0xff555963));
-    g.drawRect (226, 52, getWidth() - 232, getHeight() - 148, 1);
+    g.drawRect (202, 46, getWidth() - 208, getHeight() - 122, 1);
 }
 
 void NoiseMu6ixSamplerAudioProcessorEditor::layoutScrollableRack (int w)
 {
-    const int totalH = 1380;
+    const int totalH = 1280;
     editRack.setBounds (0, 0, w, totalH);
-    int pad = 10;
+    int pad = 8;
     int innerW = w - pad * 2;
 
-    // ===== 1. GROUP EDITOR (y = 32..220) =====
-    int y = 34;
-    addGroupBtn.setBounds      (pad, y, 110, 26);
-    deleteGroupBtn.setBounds   (pad + 116, y, 80, 26);
-    rrToggleBtn.setBounds      (pad + 206, y, 210, 26);
-    rrModeBox.setBounds        (pad + 422, y, 185, 26);
-    filterByGroupBtn.setBounds (pad + 616, y, 155, 26);
-
-    y += 32;
-    groupCards.setBounds (pad, y, innerW, 112);
-
-    y += 118;
-    grpNameLabel.setBounds  (pad, y, 150, 24);
-    groupSoloBtn.setBounds  (pad + 158, y, 60, 24);
-    groupMuteBtn.setBounds  (pad + 220, y, 60, 24);
-    grpVolLbl.setBounds     (pad + 286, y, 48, 24);
-    grpVolSlider.setBounds  (pad + 336, y, 140, 24);
-    grpPanLbl.setBounds     (pad + 482, y, 36, 24);
-    grpPanSlider.setBounds  (pad + 520, y, 130, 24);
-    grpTuneLbl.setBounds    (pad + 656, y, 40, 24);
-    grpTuneSlider.setBounds (pad + 698, y, 140, 24);
-
-    // ===== 2. MAPPING EDITOR (y = 258..580) =====
-    y = 258;
-    selZoneNameLbl.setBounds (pad, y, 380, 24);
-    autoSpreadBtn.setBounds  (w - pad - 230, y, 135, 24);
-    delZoneBtn.setBounds     (w - pad - 88,  y, 88,  24);
+    // ===== 1. GROUP EDITOR (y = 30..230) =====
+    int y = 30;
+    addGroupBtn.setBounds      (pad, y, 95, 24);
+    deleteGroupBtn.setBounds   (pad + 100, y, 70, 24);
+    rrToggleBtn.setBounds      (pad + 176, y, 145, 24);
+    rrModeBox.setBounds        (pad + 325, y, 110, 24);
+    ksMasterBtn.setBounds      (pad + 440, y, 110, 24);
+    showAllGroupsBtn.setBounds (pad + 556, y, 130, 24);
 
     y += 28;
+    groupCards.setBounds (pad, y, innerW, 88);
+
+    y += 94;
+    grpNameLabel.setBounds  (pad, y, 125, 22);
+    groupSoloBtn.setBounds  (pad + 130, y, 52, 22);
+    groupMuteBtn.setBounds  (pad + 184, y, 55, 22);
+    grpVolLbl.setBounds     (pad + 242, y, 28, 22);
+    grpVolSlider.setBounds  (pad + 272, y, 120, 22);
+    grpPanLbl.setBounds     (pad + 396, y, 28, 22);
+    grpPanSlider.setBounds  (pad + 426, y, 110, 22);
+    grpTuneLbl.setBounds    (pad + 540, y, 34, 22);
+    grpTuneSlider.setBounds (pad + 576, y, 120, 22);
+
+    // Keyswitch row per selected group
+    y += 28;
+    grpKSEnabledBtn.setBounds (pad, y, 90, 22);
+    grpKSNoteLbl.setBounds    (pad + 94, y, 48, 22);
+    grpKSNoteSlider.setBounds (pad + 146, y, 95, 22);
+    grpKSColorBox.setBounds   (pad + 250, y, 110, 22);
+
+    // ===== 2. MAPPING EDITOR (y = 264..544) =====
+    y = 264;
+    selZoneNameLbl.setBounds (pad, y, 320, 22);
+    autoSpreadBtn.setBounds  (w - pad - 186, y, 100, 22);
+    delZoneBtn.setBounds     (w - pad - 80,  y, 80,  22);
+
+    y += 26;
     int colW = innerW / 8;
     auto placeCol = [&](int idx, juce::Label& l, juce::Slider& s) {
         int cx = pad + idx * colW + 2;
-        l.setBounds (cx, y, colW - 4, 15);
-        s.setBounds (cx, y + 16, colW - 4, 22);
+        l.setBounds (cx, y, colW - 4, 14);
+        s.setBounds (cx, y + 15, colW - 4, 20);
     };
     placeCol (0, zRootLbl,  zRootSlider);
     placeCol (1, zLowKLbl,  zLowKSlider);
@@ -1127,39 +1437,39 @@ void NoiseMu6ixSamplerAudioProcessorEditor::layoutScrollableRack (int w)
     placeCol (6, zPanLbl,   zPanSlider);
     placeCol (7, zTuneLbl,  zTuneSlider);
 
-    y += 44;
-    mappingGrid.setBounds (pad, y, innerW, 246);
+    y += 40;
+    mappingGrid.setBounds (pad, y, innerW, 212);
 
-    // ===== 3. WAVE EDITOR (y = 618..892) =====
-    y = 618;
-    loopToggle.setBounds      (pad, y, 105, 26);
-    autoLoopBtn.setBounds     (pad + 110, y, 170, 26);
-    waveDragModeBox.setBounds (pad + 288, y, 175, 26);
-    cfLbl.setBounds           (pad + 470, y, 65, 26);
-    crossfadeSlider.setBounds (pad + 538, y, 150, 26);
-    zoomLbl.setBounds         (pad + 694, y, 42, 26);
-    zoomSlider.setBounds      (pad + 738, y, 130, 26);
+    // ===== 3. WAVE EDITOR (y = 578..830) =====
+    y = 578;
+    loopToggle.setBounds      (pad, y, 95, 24);
+    autoLoopBtn.setBounds     (pad + 100, y, 155, 24);
+    waveDragModeBox.setBounds (pad + 260, y, 160, 24);
+    cfLbl.setBounds           (pad + 424, y, 56, 24);
+    crossfadeSlider.setBounds (pad + 482, y, 115, 24);
+    zoomLbl.setBounds         (pad + 600, y, 36, 24);
+    zoomSlider.setBounds      (pad + 638, y, 100, 24);
 
-    y += 32;
-    waveEditor.setBounds (pad, y, innerW, 236);
+    y += 28;
+    waveEditor.setBounds (pad, y, innerW, 220);
 
-    // ===== 4. FX & ADSR RACK (y = 932..1370) =====
+    // ===== 4. FX & ADSR RACK (y = 864..1270) =====
     auto layoutModule = [](juce::Rectangle<int> box, juce::ToggleButton* tog, juce::ComboBox* combo,
                            std::vector<std::pair<juce::Label*, juce::Slider*>> knobs) {
-        auto top = box.removeFromTop (24);
-        if (tog) tog->setBounds (top.removeFromLeft (115));
-        if (combo) combo->setBounds (top.removeFromRight (95));
+        auto top = box.removeFromTop (22);
+        if (tog) tog->setBounds (top.removeFromLeft (105));
+        if (combo) combo->setBounds (top.removeFromRight (85));
         int kw = box.getWidth() / std::max (1, (int)knobs.size());
         for (auto& kv : knobs)
         {
             auto c = box.removeFromLeft (kw).reduced (2, 2);
-            kv.first->setBounds (c.removeFromTop (15));
+            kv.first->setBounds (c.removeFromTop (14));
             kv.second->setBounds (c);
         }
     };
 
     int w3 = innerW / 3;
-    juce::Rectangle<int> r1 (pad, 932, innerW, 145);
+    juce::Rectangle<int> r1 (pad, 864, innerW, 132);
     layoutModule (r1.removeFromLeft (w3).reduced (4), &fxEqOn, nullptr,
                   { {&lEqLow, &fxEqLow}, {&lEqMid, &fxEqMid}, {&lEqHigh, &fxEqHigh} });
     layoutModule (r1.removeFromLeft (w3).reduced (4), &fxFltOn, &fxFltTypeBox,
@@ -1167,7 +1477,7 @@ void NoiseMu6ixSamplerAudioProcessorEditor::layoutScrollableRack (int w)
     layoutModule (r1.reduced (4), &fxDrvOn, nullptr,
                   { {&lDrvAmt, &fxDrvAmt} });
 
-    juce::Rectangle<int> r2 (pad, 1082, innerW, 145);
+    juce::Rectangle<int> r2 (pad, 1002, innerW, 132);
     layoutModule (r2.removeFromLeft (w3).reduced (4), &fxChoOn, nullptr,
                   { {&lChoRate, &fxChoRate}, {&lChoDepth, &fxChoDepth}, {&lChoMix, &fxChoMix} });
     layoutModule (r2.removeFromLeft (w3).reduced (4), &fxDlyOn, nullptr,
@@ -1175,7 +1485,7 @@ void NoiseMu6ixSamplerAudioProcessorEditor::layoutScrollableRack (int w)
     layoutModule (r2.reduced (4), &fxRevOn, nullptr,
                   { {&lRevSize, &fxRevSize}, {&lRevDamp, &fxRevDamp}, {&lRevMix, &fxRevMix} });
 
-    juce::Rectangle<int> r3 (pad, 1232, innerW, 135);
+    juce::Rectangle<int> r3 (pad, 1140, innerW, 124);
     layoutModule (r3.reduced (4), nullptr, nullptr,
                   { {&lAtk, &fxAtk}, {&lDec, &fxDec}, {&lSus, &fxSus}, {&lRel, &fxRel} });
 }
@@ -1184,26 +1494,49 @@ void NoiseMu6ixSamplerAudioProcessorEditor::resized()
 {
     auto area = getLocalBounds();
 
-    // Header
-    auto header = area.removeFromTop (46).reduced (8, 8);
-    header.removeFromLeft (260);
-    modeToggleBtn.setBounds (header.removeFromLeft (110)); header.removeFromLeft (8);
-    saveInstBtn.setBounds   (header.removeFromLeft (95));  header.removeFromLeft (6);
-    loadInstBtn.setBounds   (header.removeFromLeft (95));  header.removeFromLeft (10);
-    loadFilesBtn.setBounds  (header.removeFromLeft (90));  header.removeFromLeft (6);
-    loadFolderBtn.setBounds (header.removeFromLeft (90));
-    voicesLabel.setBounds   (header.removeFromRight (95));
+    // Clean Header
+    auto header = area.removeFromTop (42).reduced (8, 7);
+    header.removeFromLeft (236);
+    modeToggleBtn.setBounds (header.removeFromLeft (100)); header.removeFromLeft (8);
+    saveInstBtn.setBounds   (header.removeFromLeft (90));  header.removeFromLeft (6);
+    loadInstBtn.setBounds   (header.removeFromLeft (90));
+    voicesLabel.setBounds   (header.removeFromRight (85));
 
-    // Left Sidebar
-    auto left = area.removeFromLeft (220).reduced (8, 8);
-    browseFolderBtn.setBounds (left.removeFromTop (28)); left.removeFromTop (6);
-    folderPathLabel.setBounds (left.removeFromTop (20)); left.removeFromTop (4);
-    addSelectedFileBtn.setBounds (left.removeFromBottom (30)); left.removeFromBottom (6);
-    fileListBox.setBounds (left);
+    // Left Sidebar (196px)
+    auto left = area.removeFromLeft (196).reduced (6, 6);
+    auto sideTabs = left.removeFromTop (24);
+    sideLibTabBtn.setBounds   (sideTabs.removeFromLeft (sideTabs.getWidth() / 2 - 2));
+    sideTabs.removeFromLeft (4);
+    sideFilesTabBtn.setBounds (sideTabs);
+    left.removeFromTop (6);
 
-    keyboard.setBounds (area.removeFromBottom (88).reduced (8, 4));
-    auto rack = area.reduced (8, 8);
+    // Libraries view bounds
+    auto libArea = left;
+    auto libBtns = libArea.removeFromTop (26);
+    addLibraryBtn.setBounds (libBtns.removeFromLeft (libBtns.getWidth() - 68));
+    libBtns.removeFromLeft (4);
+    removeLibraryBtn.setBounds (libBtns);
+    libArea.removeFromTop (6);
+    libraryListBox.setBounds (libArea);
 
+    // Files view bounds
+    auto fileArea = left;
+    browseFolderBtn.setBounds (fileArea.removeFromTop (26));
+    fileArea.removeFromTop (4);
+    folderPathLabel.setBounds (fileArea.removeFromTop (18));
+    fileArea.removeFromTop (4);
+    addSelectedFileBtn.setBounds (fileArea.removeFromBottom (26));
+    fileArea.removeFromBottom (5);
+    fileListBox.setBounds (fileArea);
+
+    // Bottom Piano Keyboard: exact width match with Mapping Grid!
+    auto kbArea = area.removeFromBottom (70).reduced (8, 4);
+    keyboard.setBounds (kbArea);
+    // 24 (C1) to 96 (C7) = 43 white keys -> stretch 1:1 to fill full width!
+    keyboard.setKeyWidth ((float)kbArea.getWidth() / 43.0f);
+
+    // Main Right Rack Area
+    auto rack = area.reduced (6, 6);
     if (inEditMode)
     {
         editViewport.setBounds (rack);
@@ -1211,11 +1544,11 @@ void NoiseMu6ixSamplerAudioProcessorEditor::resized()
     }
     else
     {
-        auto topF = rack.removeFromTop (32);
-        addMacroBtn.setBounds (topF.removeFromLeft (150)); topF.removeFromLeft (8);
-        toggleCustomizeBtn.setBounds (topF.removeFromLeft (150));
+        auto topF = rack.removeFromTop (30);
+        addMacroBtn.setBounds (topF.removeFromLeft (140)); topF.removeFromLeft (8);
+        toggleCustomizeBtn.setBounds (topF.removeFromLeft (140));
 
-        rack.removeFromTop (12);
+        rack.removeFromTop (10);
         std::vector<CustomMacroSlot*> visibleSlots;
         for (int i = 0; i < (int)macroSlots.size(); ++i)
             if (processor.macroConfigs[i].visible) visibleSlots.push_back (macroSlots[(size_t)i].get());
@@ -1225,11 +1558,11 @@ void NoiseMu6ixSamplerAudioProcessorEditor::resized()
             int cols = std::min (4, (int)visibleSlots.size());
             int rows = ((int)visibleSlots.size() + cols - 1) / cols;
             int cellW = rack.getWidth() / cols;
-            int cellH = std::min (240, rack.getHeight() / std::max (1, rows));
+            int cellH = std::min (220, rack.getHeight() / std::max (1, rows));
             for (size_t i = 0; i < visibleSlots.size(); ++i)
-                visibleSlots[i]->setBounds (rack.getX() + ((int)i % cols) * cellW + 6,
-                                            rack.getY() + ((int)i / cols) * cellH + 6,
-                                            cellW - 12, cellH - 12);
+                visibleSlots[i]->setBounds (rack.getX() + ((int)i % cols) * cellW + 5,
+                                            rack.getY() + ((int)i / cols) * cellH + 5,
+                                            cellW - 10, cellH - 10);
         }
     }
 }
