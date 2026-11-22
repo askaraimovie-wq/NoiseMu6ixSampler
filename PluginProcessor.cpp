@@ -308,7 +308,7 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
                 auto selectedZone = matches[(size_t)chosenIdx];
 
                 // Find free voice or steal oldest
-                SamplerVoice* targetVoice = &voices[0];
+                NM6Voice* targetVoice = &voices[0];
                 for (auto& v : voices)
                 {
                     if (!v.active) { targetVoice = &v; break; }
