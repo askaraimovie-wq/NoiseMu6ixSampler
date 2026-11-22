@@ -30,8 +30,8 @@ juce_add_plugin(NoiseMu6ixSampler
 juce_generate_juce_header(NoiseMu6ixSampler)
 
 target_sources(NoiseMu6ixSampler PRIVATE
-    Source/PluginProcessor.cpp
-    Source/PluginEditor.cpp
+    PluginProcessor.cpp
+    PluginEditor.cpp
 )
 
 target_compile_definitions(NoiseMu6ixSampler PUBLIC
