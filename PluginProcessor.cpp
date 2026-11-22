@@ -8,10 +8,10 @@ NoiseMu6ixSamplerAudioProcessor::NoiseMu6ixSamplerAudioProcessor()
       apvts (*this, nullptr, "PARAMS", createParameterLayout())
 {
     formatManager.registerBasicFormats();
+    for (int i = 0; i < 128; ++i) lastRRIndexPerNote[i] = -1;
 
     SampleGroup g1;
-    g1.name = "Group 1 (RR1)";
-    g1.rrGroup = 1;
+    g1.name = "Group 1";
     groups.push_back (g1);
 
     macroConfigs[0] = { "Dynamics",   true,  true,  (int)MacroTarget::Dynamics };
@@ -100,7 +100,6 @@ int NoiseMu6ixSamplerAudioProcessor::addGroup (const juce::String& name)
     SampleGroup g;
     int idx = (int)groups.size() + 1;
     g.name = name.isEmpty() ? ("Group " + juce::String (idx)) : name;
-    g.rrGroup = juce::jlimit (1, 10, ((idx - 1) % 10) + 1);
     groups.push_back (g);
     return (int)groups.size() - 1;
 }
@@ -186,9 +185,9 @@ int NoiseMu6ixSamplerAudioProcessor::parseRRFromFilename (const juce::String& na
     int idx = upper.indexOf ("RR");
     if (idx >= 0 && idx + 2 < upper.length())
     {
-        auto numStr = upper.substring (idx + 2, idx + 4).retainCharacters ("0123456789");
+        auto numStr = upper.substring (idx + 2, idx + 5).retainCharacters ("0123456789");
         int rr = numStr.getIntValue();
-        if (rr >= 1 && rr <= 10) return rr;
+        if (rr >= 1 && rr <= 999) return rr;
     }
     return -1;
 }
@@ -232,8 +231,7 @@ void NoiseMu6ixSamplerAudioProcessor::loadSampleFile (const juce::File& file, in
             while ((int)groups.size() < parsedRR)
             {
                 SampleGroup ng;
-                ng.name = "Group " + juce::String ((int)groups.size() + 1) + " (RR" + juce::String ((int)groups.size() + 1) + ")";
-                ng.rrGroup = (int)groups.size() + 1;
+                ng.name = "Group " + juce::String ((int)groups.size() + 1);
                 groups.push_back (ng);
             }
             gIdx = parsedRR - 1;
@@ -292,6 +290,35 @@ void NoiseMu6ixSamplerAudioProcessor::clearAllZones()
 {
     const juce::ScopedLock sl (dataLock);
     zones.clear();
+}
+
+void NoiseMu6ixSamplerAudioProcessor::triggerZone (std::shared_ptr<SampleZone> selectedZone,
+                                                   const SampleGroup& grp,
+                                                   int note, int vel,
+                                                   const juce::ADSR::Parameters& adsrParams)
+{
+    NM6Voice* targetVoice = &voices[0];
+    for (auto& v : voices)
+        if (!v.active) { targetVoice = &v; break; }
+
+    float totalDb = selectedZone->volumeDb + grp.volumeDb;
+    float totalPan = juce::jlimit (-1.0f, 1.0f, selectedZone->pan + grp.pan);
+    float panAngle = (totalPan * 0.5f + 0.5f) * juce::MathConstants<float>::halfPi;
+    float totalTune = selectedZone->tuneSemi + grp.tuneSemi;
+
+    targetVoice->active = true;
+    targetVoice->midiNote = note;
+    targetVoice->velocity = vel / 127.0f;
+    targetVoice->zone = selectedZone;
+    targetVoice->playPos = (double)selectedZone->sampleStart.load();
+    targetVoice->voiceGain = juce::Decibels::decibelsToGain (totalDb);
+    targetVoice->voicePanL = std::cos (panAngle);
+    targetVoice->voicePanR = std::sin (panAngle);
+    targetVoice->basePitchRatio = std::pow (2.0, ((note - selectedZone->rootNote) + totalTune) / 12.0)
+                                  * (selectedZone->sampleRate / currentSampleRate);
+    targetVoice->adsr.setSampleRate (currentSampleRate);
+    targetVoice->adsr.setParameters (adsrParams);
+    targetVoice->adsr.noteOn();
 }
 
 void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
@@ -363,58 +390,41 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
 
             if (!matches.empty())
             {
-                std::sort (matches.begin(), matches.end(), [&](const auto& a, const auto& b) {
-                    int rrA = (a->groupIndex < (int)groupSnapshot.size()) ? groupSnapshot[(size_t)a->groupIndex].rrGroup : 1;
-                    int rrB = (b->groupIndex < (int)groupSnapshot.size()) ? groupSnapshot[(size_t)b->groupIndex].rrGroup : 1;
-                    return rrA < rrB;
-                });
-
-                int chosenIdx = 0;
-                int count = (int)matches.size();
-                if (count > 1)
+                if (rrEnabled.load() && matches.size() > 1)
                 {
+                    // Unlimited Round Robin across ALL matching zones/groups!
+                    int count = (int)matches.size();
+                    int chosenIdx = 0;
                     int mode = rrMode.load();
-                    if (mode == 0) chosenIdx = (lastRRIndexPerNote[note] + 1) % count;
-                    else if (mode == 1)
+                    if (mode == 0) // Cycle
+                    {
+                        chosenIdx = (lastRRIndexPerNote[note] + 1) % count;
+                    }
+                    else // No-Repeat Random
                     {
                         std::uniform_int_distribution<int> dist (0, count - 2);
                         int r = dist (rng);
                         chosenIdx = (r >= lastRRIndexPerNote[note]) ? r + 1 : r;
                     }
-                    else
+                    lastRRIndexPerNote[note] = chosenIdx;
+                    auto selectedZone = matches[(size_t)chosenIdx];
+                    SampleGroup grp;
+                    if (selectedZone->groupIndex >= 0 && selectedZone->groupIndex < (int)groupSnapshot.size())
+                        grp = groupSnapshot[(size_t)selectedZone->groupIndex];
+
+                    triggerZone (selectedZone, grp, note, vel, adsrParams);
+                }
+                else
+                {
+                    // Round Robin OFF: play all matching zones together (layering)
+                    for (auto& selectedZone : matches)
                     {
-                        std::uniform_int_distribution<int> dist (0, count - 1);
-                        chosenIdx = dist (rng);
+                        SampleGroup grp;
+                        if (selectedZone->groupIndex >= 0 && selectedZone->groupIndex < (int)groupSnapshot.size())
+                            grp = groupSnapshot[(size_t)selectedZone->groupIndex];
+                        triggerZone (selectedZone, grp, note, vel, adsrParams);
                     }
                 }
-                lastRRIndexPerNote[note] = chosenIdx;
-                auto selectedZone = matches[(size_t)chosenIdx];
-                SampleGroup grp;
-                if (selectedZone->groupIndex >= 0 && selectedZone->groupIndex < (int)groupSnapshot.size())
-                    grp = groupSnapshot[(size_t)selectedZone->groupIndex];
-
-                NM6Voice* targetVoice = &voices[0];
-                for (auto& v : voices)
-                    if (!v.active) { targetVoice = &v; break; }
-
-                float totalDb = selectedZone->volumeDb + grp.volumeDb;
-                float totalPan = juce::jlimit (-1.0f, 1.0f, selectedZone->pan + grp.pan);
-                float panAngle = (totalPan * 0.5f + 0.5f) * juce::MathConstants<float>::halfPi;
-                float totalTune = selectedZone->tuneSemi + grp.tuneSemi;
-
-                targetVoice->active = true;
-                targetVoice->midiNote = note;
-                targetVoice->velocity = vel / 127.0f;
-                targetVoice->zone = selectedZone;
-                targetVoice->playPos = (double)selectedZone->sampleStart.load();
-                targetVoice->voiceGain = juce::Decibels::decibelsToGain (totalDb);
-                targetVoice->voicePanL = std::cos (panAngle);
-                targetVoice->voicePanR = std::sin (panAngle);
-                targetVoice->basePitchRatio = std::pow (2.0, ((note - selectedZone->rootNote) + totalTune) / 12.0)
-                                              * (selectedZone->sampleRate / currentSampleRate);
-                targetVoice->adsr.setSampleRate (currentSampleRate);
-                targetVoice->adsr.setParameters (adsrParams);
-                targetVoice->adsr.noteOn();
             }
         }
         else if (msg.isNoteOff())
@@ -596,13 +606,13 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
 
 std::unique_ptr<juce::XmlElement> NoiseMu6ixSamplerAudioProcessor::buildStateXml (bool forMonolith)
 {
-    auto root = std::make_unique<juce::XmlElement> ("NoiseMu6ixStateV3");
+    auto root = std::make_unique<juce::XmlElement> ("NoiseMu6ixStateV104");
+    root->setAttribute ("rrEnabled", rrEnabled.load());
     root->setAttribute ("rrMode", rrMode.load());
 
     if (auto apvtsXml = apvts.copyState().createXml())
         root->addChildElement (apvtsXml.release());
 
-    // FX Settings
     auto* fxXml = root->createNewChildElement ("FX");
     fxXml->setAttribute ("eqOn", fx.eqOn.load());
     fxXml->setAttribute ("eqLow", fx.eqLowDb.load());
@@ -647,7 +657,6 @@ std::unique_ptr<juce::XmlElement> NoiseMu6ixSamplerAudioProcessor::buildStateXml
     {
         auto* gx = groupsXml->createNewChildElement ("Group");
         gx->setAttribute ("name", g.name);
-        gx->setAttribute ("rr", g.rrGroup);
         gx->setAttribute ("vol", g.volumeDb);
         gx->setAttribute ("pan", g.pan);
         gx->setAttribute ("tune", g.tuneSemi);
@@ -687,7 +696,8 @@ std::unique_ptr<juce::XmlElement> NoiseMu6ixSamplerAudioProcessor::buildStateXml
 
 void NoiseMu6ixSamplerAudioProcessor::applyStateXml (const juce::XmlElement& root, juce::ZipFile* monolithZip)
 {
-    rrMode.store (root.getIntAttribute ("rrMode", 1));
+    rrEnabled.store (root.getBoolAttribute ("rrEnabled", true));
+    rrMode.store (root.getIntAttribute ("rrMode", 0));
 
     if (auto* apvtsXml = root.getChildByName (apvts.state.getType()))
         apvts.replaceState (juce::ValueTree::fromXml (*apvtsXml));
@@ -744,7 +754,6 @@ void NoiseMu6ixSamplerAudioProcessor::applyStateXml (const juce::XmlElement& roo
         {
             SampleGroup g;
             g.name     = gx->getStringAttribute ("name", "Group");
-            g.rrGroup  = gx->getIntAttribute ("rr", 1);
             g.volumeDb = (float)gx->getDoubleAttribute ("vol", 0.0);
             g.pan      = (float)gx->getDoubleAttribute ("pan", 0.0);
             g.tuneSemi = (float)gx->getDoubleAttribute ("tune", 0.0);
@@ -761,7 +770,6 @@ void NoiseMu6ixSamplerAudioProcessor::applyStateXml (const juce::XmlElement& roo
         for (auto* zx : zonesXml->getChildIterator())
         {
             std::shared_ptr<SampleZone> loadedZone;
-
             if (monolithZip != nullptr && zx->hasAttribute ("entry"))
             {
                 auto entryName = zx->getStringAttribute ("entry");
@@ -851,7 +859,7 @@ bool NoiseMu6ixSamplerAudioProcessor::saveMonolithInstrument (const juce::File& 
             writer->writeFromAudioSampleBuffer (z->buffer, 0, z->buffer.getNumSamples());
             writer->flush();
             juce::MemoryBlock flacData (memOut->getData(), memOut->getDataSize());
-            writer.reset(); // deletes memOut safely
+            writer.reset();
             builder.addEntry (new juce::MemoryInputStream (flacData, true),
                               0, "samples/s_" + juce::String ((int)i) + ".flac", juce::Time::getCurrentTime());
         }
@@ -879,7 +887,7 @@ bool NoiseMu6ixSamplerAudioProcessor::loadMonolithInstrument (const juce::File& 
     if (!xmlStream) return false;
 
     auto xml = juce::parseXML (xmlStream->readEntireStreamAsString());
-    if (!xml || !xml->hasTagName ("NoiseMu6ixStateV3")) return false;
+    if (!xml || !xml->hasTagName ("NoiseMu6ixStateV104")) return false;
 
     applyStateXml (*xml, &zip);
     return true;
@@ -894,7 +902,7 @@ void NoiseMu6ixSamplerAudioProcessor::getStateInformation (juce::MemoryBlock& de
 void NoiseMu6ixSamplerAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     auto root = getXmlFromBinary (data, sizeInBytes);
-    if (root && root->hasTagName ("NoiseMu6ixStateV3"))
+    if (root && root->hasTagName ("NoiseMu6ixStateV104"))
         applyStateXml (*root, nullptr);
 }
 

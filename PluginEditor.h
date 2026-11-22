@@ -3,12 +3,30 @@
 #include "PluginProcessor.h"
 #include <functional>
 
+// ==================== Kontakt-Style Individual Group Boxes Grid ====================
+class GroupCardsComponent : public juce::Component
+{
+public:
+    GroupCardsComponent (NoiseMu6ixSamplerAudioProcessor& p);
+    void paint (juce::Graphics& g) override;
+    void mouseDown (const juce::MouseEvent& e) override;
+
+    int selectedGroupIdx = 0;
+    std::function<void (int)> onGroupSelected;
+
+private:
+    juce::Rectangle<int> getCardRect (int idx) const;
+    NoiseMu6ixSamplerAudioProcessor& processor;
+};
+
+// ==================== Simplified & Smooth Mapping Editor Grid ====================
 class MappingGridComponent : public juce::Component,
                              public juce::FileDragAndDropTarget
 {
 public:
     MappingGridComponent (NoiseMu6ixSamplerAudioProcessor& p);
     void paint (juce::Graphics& g) override;
+    void mouseMove (const juce::MouseEvent& e) override;
     void mouseDown (const juce::MouseEvent& e) override;
     void mouseDrag (const juce::MouseEvent& e) override;
     void mouseUp (const juce::MouseEvent&) override { dragMode = DragMode::None; }
@@ -18,23 +36,27 @@ public:
 
     int selectedZoneIdx = -1;
     int activeGroupFilter = -1;
+    int targetDropGroup = 0;
     std::function<void()> onZoneChanged;
 
 private:
     static constexpr int minNote = 24;
     static constexpr int maxNote = 96;
     enum class DragMode { None, Move, LeftEdge, RightEdge, TopEdge, BottomEdge };
-    DragMode dragMode = DragMode::None;
-    int dragStartNote = 60, dragStartVel = 64;
-    int origLowK = 0, origHighK = 127, origLowV = 0, origHighV = 127, origRoot = 60;
 
+    DragMode hitTestDragMode (const juce::Rectangle<float>& r, juce::Point<float> pt) const;
     juce::Rectangle<float> getZoneRect (const SampleZone& z) const;
     int xToNote (float x) const;
     int yToVel (float y) const;
 
+    DragMode dragMode = DragMode::None;
+    int dragStartNote = 60, dragStartVel = 64;
+    int origLowK = 0, origHighK = 127, origLowV = 0, origHighV = 127, origRoot = 60;
+
     NoiseMu6ixSamplerAudioProcessor& processor;
 };
 
+// ==================== Wave Editor Component ====================
 class WaveEditorComponent : public juce::Component
 {
 public:
@@ -56,6 +78,7 @@ private:
     float zoomFactor = 1.0f;
 };
 
+// ==================== Front-Panel Custom Knob/Slider Slot ====================
 class CustomMacroSlot : public juce::Component
 {
 public:
@@ -80,6 +103,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
 };
 
+// ==================== Left File Browser List ====================
 class FileBrowserListModel : public juce::ListBoxModel
 {
 public:
@@ -91,6 +115,14 @@ public:
     void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override;
 };
 
+// ==================== Scrollable Edit Rack Container ====================
+class EditRackContent : public juce::Component
+{
+public:
+    void paint (juce::Graphics& g) override;
+};
+
+// ==================== Main Editor ====================
 class NoiseMu6ixSamplerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                               public juce::Timer
 {
@@ -103,22 +135,20 @@ public:
     void timerCallback() override;
 
 private:
-    enum class EditTab { Group = 0, Mapping = 1, Wave = 2, FX = 3 };
-
     void updateModeVisibility();
-    void refreshGroupList();
+    void refreshGroupUI();
     void refreshSelectedZoneUI();
     void refreshFXUI();
     void applyZoneBarToSelected();
     void applyGroupInspector();
     void applyFXToProcessor();
     void browseLocalFolder();
+    void layoutScrollableRack (int width);
 
     NoiseMu6ixSamplerAudioProcessor& processor;
     std::unique_ptr<juce::FileChooser> fileChooser;
 
     bool inEditMode = true;
-    EditTab currentTab = EditTab::Mapping;
     bool customizeFrontUI = true;
     int selectedGroupIdx = 0;
 
@@ -128,7 +158,6 @@ private:
     juce::TextButton loadInstBtn   { "Load .nm6i" };
     juce::TextButton loadFilesBtn  { "Load WAVs" };
     juce::TextButton loadFolderBtn { "Auto-Map" };
-    juce::ComboBox rrModeBox;
     juce::Label voicesLabel { {}, "Voices: 0" };
 
     // Left Sidebar: File Browser
@@ -138,35 +167,36 @@ private:
     FileBrowserListModel fileListModel;
     juce::ListBox fileListBox { "FileList", &fileListModel };
 
-    // Edit Mode Sub-Tabs
-    juce::TextButton tabGroupBtn   { "Group Editor" };
-    juce::TextButton tabMappingBtn { "Mapping Editor" };
-    juce::TextButton tabWaveBtn    { "Wave Editor" };
-    juce::TextButton tabFXBtn      { "FX & ADSR Rack" };
+    // Scrollable Edit Mode Viewport (One-by-one vertical Kontakt Rack!)
+    juce::Viewport editViewport;
+    EditRackContent editRack;
 
-    // Group Editor Controls
-    juce::ComboBox groupSelector;
-    juce::TextButton createGroupBtn { "Create Group" };
-    juce::TextButton deleteGroupBtn { "Delete Group" };
+    // --- Section 1: Group Editor (Individual Kontakt Cards + Unlimited RR ON/OFF) ---
+    juce::TextButton addGroupBtn    { "+ Add Group" };
+    juce::TextButton deleteGroupBtn { "- Delete" };
+    juce::TextButton rrToggleBtn    { "Round Robin: ON (Unlimited)" };
+    juce::ComboBox   rrModeBox;
+    juce::ToggleButton filterByGroupBtn { "Selected Group Only" };
+    GroupCardsComponent groupCards;
+
+    juce::Label grpNameLabel;
     juce::ToggleButton groupSoloBtn { "Solo" };
     juce::ToggleButton groupMuteBtn { "Mute" };
-    juce::ToggleButton filterByGroupBtn { "Selected Group Only" };
-    juce::Slider grpRRSlider, grpVolSlider, grpPanSlider, grpTuneSlider;
-    juce::Label grpRRLbl { {}, "RR (1-10)" }, grpVolLbl { {}, "Group Vol (dB)" },
-                grpPanLbl { {}, "Group Pan" }, grpTuneLbl { {}, "Group Tune" };
+    juce::Slider grpVolSlider, grpPanSlider, grpTuneSlider;
+    juce::Label grpVolLbl { {}, "Vol dB" }, grpPanLbl { {}, "Pan" }, grpTuneLbl { {}, "Tune" };
 
-    // Mapping Editor Controls
+    // --- Section 2: Mapping Editor (Easy Drag Grid) ---
     MappingGridComponent mappingGrid;
     juce::TextButton autoSpreadBtn { "Auto-Spread Keys" };
     juce::TextButton delZoneBtn    { "Del Zone" };
-    juce::Label selZoneNameLbl     { {}, "Sample: (none selected)" };
+    juce::Label selZoneNameLbl     { {}, "Sample: (click a zone on grid)" };
     juce::Slider zRootSlider, zLowKSlider, zHighKSlider, zLowVSlider, zHighVSlider;
     juce::Slider zVolSlider, zPanSlider, zTuneSlider;
     juce::Label zRootLbl { {}, "Root" }, zLowKLbl { {}, "Low K" }, zHighKLbl { {}, "High K" },
                 zLowVLbl { {}, "Low V" }, zHighVLbl { {}, "High V" },
                 zVolLbl { {}, "Vol dB" }, zPanLbl { {}, "Pan" }, zTuneLbl { {}, "Tune" };
 
-    // Wave Editor Controls
+    // --- Section 3: Wave Editor (Syncs directly with Mapping Editor!) ---
     WaveEditorComponent waveEditor;
     juce::ToggleButton loopToggle { "Long / Loop" };
     juce::TextButton autoLoopBtn  { "Auto-Loop (Zero-Cross)" };
@@ -174,7 +204,7 @@ private:
     juce::Slider crossfadeSlider, zoomSlider;
     juce::Label cfLbl { {}, "Crossfade" }, zoomLbl { {}, "Zoom" };
 
-    // FX & ADSR Rack Controls (Inside Edit Mode Only!)
+    // --- Section 4: FX & ADSR Rack ---
     juce::ToggleButton fxEqOn { "3-Band EQ" }, fxFltOn { "Filter" }, fxDrvOn { "Drive" },
                        fxChoOn { "Chorus" }, fxDlyOn { "Stereo Delay" }, fxRevOn { "Reverb" };
     juce::ComboBox fxFltTypeBox;

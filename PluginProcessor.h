@@ -8,7 +8,6 @@
 struct SampleGroup
 {
     juce::String name = "Group 1";
-    int rrGroup = 1; // 1 to 10
     float volumeDb = 0.0f;
     float pan = 0.0f;      // -1.0 to 1.0
     float tuneSemi = 0.0f; // -24 to +24
@@ -73,41 +72,34 @@ struct MacroConfig
 
 struct FXSettings
 {
-    // 3-Band EQ
     std::atomic<bool> eqOn { false };
     std::atomic<float> eqLowDb  { 0.0f };
     std::atomic<float> eqMidDb  { 0.0f };
     std::atomic<float> eqHighDb { 0.0f };
 
-    // Filter
     std::atomic<bool> filterOn { true };
     std::atomic<int> filterType { 0 }; // 0=LP, 1=HP, 2=BP
     std::atomic<float> filterCutoff { 1.0f };
     std::atomic<float> filterRes { 0.1f };
 
-    // Saturation / Drive
     std::atomic<bool> driveOn { false };
     std::atomic<float> driveAmount { 0.0f };
 
-    // Chorus
     std::atomic<bool> chorusOn { false };
     std::atomic<float> chorusRate { 1.2f };
     std::atomic<float> chorusDepth { 0.25f };
     std::atomic<float> chorusMix { 0.35f };
 
-    // Stereo Delay
     std::atomic<bool> delayOn { false };
     std::atomic<float> delayTimeMs { 320.0f };
     std::atomic<float> delayFeedback { 0.35f };
     std::atomic<float> delayMix { 0.25f };
 
-    // Reverb
     std::atomic<bool> reverbOn { true };
     std::atomic<float> reverbSize { 0.65f };
     std::atomic<float> reverbDamp { 0.45f };
     std::atomic<float> reverbMix { 0.15f };
 
-    // Master ADSR
     std::atomic<float> attack  { 0.02f };
     std::atomic<float> decay   { 0.25f };
     std::atomic<float> sustain { 1.0f };
@@ -177,7 +169,9 @@ public:
     std::vector<SampleGroup> groups;
     std::vector<std::shared_ptr<SampleZone>> zones;
 
-    std::atomic<int> rrMode { 1 };
+    // Unlimited Round Robin ON/OFF + Mode (0 = Cycle, 1 = No-Repeat Random)
+    std::atomic<bool> rrEnabled { true };
+    std::atomic<int> rrMode { 0 };
     std::atomic<int> activeVoicesCount { 0 };
     FXSettings fx;
 
@@ -194,14 +188,15 @@ private:
     float getMacroValueForTarget (MacroTarget target, float defaultValue) const;
     std::unique_ptr<juce::XmlElement> buildStateXml (bool forMonolith);
     void applyStateXml (const juce::XmlElement& root, juce::ZipFile* monolithZip);
+    void triggerZone (std::shared_ptr<SampleZone> selectedZone, const SampleGroup& grp,
+                      int note, int vel, const juce::ADSR::Parameters& adsrParams);
 
     juce::AudioFormatManager formatManager;
-    static constexpr int maxVoices = 48;
+    static constexpr int maxVoices = 64;
     NM6Voice voices[maxVoices];
-    int lastRRIndexPerNote[128] = { 0 };
+    int lastRRIndexPerNote[128] = { -1 };
     std::mt19937 rng { std::random_device{}() };
 
-    // DSP FX Chain
     juce::dsp::IIR::Filter<float> eqLowL, eqLowR, eqMidL, eqMidR, eqHighL, eqHighR;
     juce::dsp::StateVariableTPTFilter<float> filter;
     juce::dsp::Chorus<float> chorus;
