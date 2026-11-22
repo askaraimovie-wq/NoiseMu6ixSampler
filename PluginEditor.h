@@ -3,7 +3,7 @@
 #include "PluginProcessor.h"
 #include <functional>
 
-// ==================== Logo Button (Click to open UI Size % Menu) ====================
+// ==================== Logo Button (Click for UI Size % Menu) ====================
 class LogoSizeButton : public juce::Component
 {
 public:
@@ -11,10 +11,38 @@ public:
     void mouseEnter (const juce::MouseEvent&) override { hovered = true; repaint(); }
     void mouseExit  (const juce::MouseEvent&) override { hovered = false; repaint(); }
     void mouseDown  (const juce::MouseEvent&) override { if (onClick) onClick(); }
-
     std::function<void()> onClick;
 private:
     bool hovered = false;
+};
+
+// ==================== Kontakt-Style Library Browser (Banner Photo + Expandable List) ====================
+struct LibraryEntry
+{
+    juce::String title;
+    juce::File folder;
+    juce::File coverImageFile;
+    juce::Image cachedImage;
+    bool expanded = false;
+    juce::Array<juce::File> instruments; // .nm6i files inside folder
+};
+
+class LibraryBrowserComponent : public juce::Component
+{
+public:
+    std::vector<LibraryEntry> libraries;
+    int selectedLibraryIdx = -1;
+
+    std::function<void (int)> onLibrarySelected;
+    std::function<void (const juce::File&)> onInstrumentClicked;
+
+    void refreshHeight();
+    void paint (juce::Graphics& g) override;
+    void mouseDown (const juce::MouseEvent& e) override;
+
+private:
+    static constexpr int bannerH = 54;
+    static constexpr int itemH   = 24;
 };
 
 // ==================== Kontakt-Style Colored Piano Keyboard ====================
@@ -22,6 +50,7 @@ class ColoredMidiKeyboardComponent : public juce::MidiKeyboardComponent
 {
 public:
     ColoredMidiKeyboardComponent (NoiseMu6ixSamplerAudioProcessor& p, juce::MidiKeyboardState& state);
+    int activeSlotIdx = 0;
     int activeFilterGroupIdx = 0;
 
 protected:
@@ -35,7 +64,7 @@ private:
     NoiseMu6ixSamplerAudioProcessor& processor;
 };
 
-// ==================== Kontakt-Style Individual Group Cards ====================
+// ==================== Individual Group Cards ====================
 class GroupCardsComponent : public juce::Component
 {
 public:
@@ -43,6 +72,7 @@ public:
     void paint (juce::Graphics& g) override;
     void mouseDown (const juce::MouseEvent& e) override;
 
+    int activeSlotIdx = 0;
     int selectedGroupIdx = 0;
     std::function<void (int)> onGroupSelected;
 
@@ -66,6 +96,7 @@ public:
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void filesDropped (const juce::StringArray& files, int x, int y) override;
 
+    int activeSlotIdx = 0;
     int selectedZoneIdx = -1;
     int activeGroupFilter = 0;
     int targetDropGroup = 0;
@@ -100,7 +131,6 @@ public:
     void paint (juce::Graphics& g) override;
     void mouseDown (const juce::MouseEvent& e) override;
     void mouseDrag (const juce::MouseEvent& e) override;
-
     std::function<void()> onWaveChanged;
 
 private:
@@ -110,21 +140,51 @@ private:
     float zoomFactor = 1.0f;
 };
 
-// ==================== Clean Performance Knob/Slider (Front Panel Only) ====================
+// ==================== Clean Performance Macro Widget ====================
 class PerformanceMacroWidget : public juce::Component
 {
 public:
-    PerformanceMacroWidget (NoiseMu6ixSamplerAudioProcessor& p, int slotIndex);
+    PerformanceMacroWidget (NoiseMu6ixSamplerAudioProcessor& p, int slotIndex, int macroIndex);
     void resized() override;
     void paint (juce::Graphics& g) override;
     void syncFromConfig();
 
 private:
     NoiseMu6ixSamplerAudioProcessor& processor;
-    int index;
+    int slotIdx;
+    int mIdx;
     juce::Label nameLabel;
     juce::Slider slider;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
+};
+
+// ==================== Single Slot Card in the 16-Slot Front Panel Multi-Rack ====================
+class MultiRackSlotCard : public juce::Component
+{
+public:
+    MultiRackSlotCard (NoiseMu6ixSamplerAudioProcessor& p, int sIdx);
+    void paint (juce::Graphics& g) override;
+    void resized() override;
+    void syncFromSlot();
+
+    int slotIdx;
+    std::function<void (int)> onEditClicked;
+    std::function<void (int)> onSelectClicked;
+    std::function<void (int)> onCloseClicked;
+
+private:
+    NoiseMu6ixSamplerAudioProcessor& processor;
+    juce::TextButton editBtn  { "Edit" };
+    juce::Label      titleLbl;
+    juce::ComboBox   midiChBox;
+    juce::ComboBox   outBusBox;
+    juce::Slider     volSlider;
+    juce::Slider     panSlider;
+    juce::TextButton muteBtn  { "M" };
+    juce::TextButton soloBtn  { "S" };
+    juce::TextButton closeBtn { "X" };
+
+    juce::Component  panelBody;
+    std::vector<std::unique_ptr<PerformanceMacroWidget>> macroWidgets;
 };
 
 // ==================== Draggable & Resizable Panel Editor Canvas ====================
@@ -138,6 +198,7 @@ public:
     void mouseDrag (const juce::MouseEvent& e) override;
     void mouseUp   (const juce::MouseEvent&) override { dragOp = DragOp::None; }
 
+    int activeSlotIdx = 0;
     int selectedMacroIdx = 0;
     std::function<void (int)> onSelectionChanged;
     std::function<void()> onLayoutChanged;
@@ -147,16 +208,14 @@ private:
     DragOp dragOp = DragOp::None;
     juce::Point<int> dragStartMouse;
     int origX = 0, origY = 0, origW = 100, origH = 120;
-
     NoiseMu6ixSamplerAudioProcessor& processor;
 };
 
-// ==================== Left Sidebar List ====================
+// ==================== Left Files List ====================
 class FileBrowserListModel : public juce::ListBoxModel
 {
 public:
     juce::Array<juce::File> files;
-    bool isLibraryStyle = false;
     std::function<void (const juce::File&)> onFileDoubleClicked;
 
     int getNumRows() override { return files.size(); }
@@ -169,14 +228,9 @@ class EditRackContent : public juce::Component
 {
 public:
     void paint (juce::Graphics& g) override;
-    int groupHeaderY = -1;
-    int mapHeaderY   = -1;
-    int waveHeaderY  = -1;
-    int fxHeaderY    = -1;
-    int panelHeaderY = -1;
+    int groupHeaderY = -1, mapHeaderY = -1, waveHeaderY = -1, fxHeaderY = -1, panelHeaderY = -1;
 };
 
-// ==================== Scalable Root Canvas ====================
 class RootUICanvas : public juce::Component
 {
 public:
@@ -191,7 +245,7 @@ public:
     NoiseMu6ixSamplerAudioProcessorEditor (NoiseMu6ixSamplerAudioProcessor&);
     ~NoiseMu6ixSamplerAudioProcessorEditor() override { stopTimer(); }
 
-    void resized() override;
+    void resized() override {}
     void timerCallback() override;
 
 private:
@@ -200,22 +254,27 @@ private:
 
     void setUIScale (float newScale);
     void showScaleMenu();
+    void setActiveSlot (int newSlotIdx);
     void updateModeVisibility();
     void updateSidebarVisibility();
+    void rebuildMultiRackCards();
     void refreshGroupUI();
     void refreshSelectedZoneUI();
     void refreshFXUI();
     void refreshPanelEditorInspector();
     void applyPanelEditorInspector();
-    void syncFrontPanelWidgets();
     void applyZoneBarToSelected();
     void applyGroupInspector();
     void applyFXToProcessor();
+
     void browseLocalFolder();
-    void addLibraryDialog();
+    void addLibraryFolderDialog();
+    void setSelectedLibraryPhotoDialog();
+    void scanLibraryEntry (LibraryEntry& lib);
     void loadSavedLibrariesList();
     void saveLibrariesList();
     juce::File getLibraryConfigFile() const;
+
     void layoutBaseUI();
     void layoutScrollableRack (int width);
 
@@ -225,11 +284,12 @@ private:
     float uiScale = 1.0f;
     RootUICanvas rootCanvas;
 
-    bool inEditMode = true;
+    bool inEditMode = false; // Start in Kontakt Multi-Rack Front Panel!
     bool sidebarShowLibraries = true;
+    int activeSlotIdx = 0;
     int selectedGroupIdx = 0;
 
-    // 5 Module Toggle States (ON/OFF in Edit Mode)
+    // 5 Module Toggle States
     bool showGroupSec = true;
     bool showMapSec   = true;
     bool showWaveSec  = false;
@@ -238,37 +298,40 @@ private:
 
     // Top Header Bar
     LogoSizeButton logoBtn;
-    juce::TextButton modeToggleBtn { "Front Panel" };
+    juce::TextButton modeToggleBtn { "Edit Mode" };
     juce::TextButton saveInstBtn   { "Save .nm6i" };
     juce::TextButton loadInstBtn   { "Load .nm6i" };
-    juce::Label versionLabel       { {}, "v1.0.6" };
+    juce::ComboBox   activeSlotBox;
+    juce::Label versionLabel       { {}, "v1.0.7" };
     juce::Label voicesLabel        { {}, "Voices: 0" };
 
-    // Left Sidebar
-    juce::TextButton sideLibTabBtn   { "Libraries" };
-    juce::TextButton sideFilesTabBtn { "Files" };
-    juce::TextButton addLibraryBtn    { "+ Add Library" };
-    juce::TextButton removeLibraryBtn { "- Remove" };
-    FileBrowserListModel libraryListModel;
-    juce::ListBox libraryListBox { "LibraryList", &libraryListModel };
+    // Left Sidebar: Libraries (Banner + Expandable) | Files
+    juce::TextButton sideLibTabBtn    { "Libraries" };
+    juce::TextButton sideFilesTabBtn  { "Files" };
+    juce::TextButton addLibraryBtn    { "+ Add Lib" };
+    juce::TextButton setPhotoBtn      { "Photo" };
+    juce::TextButton removeLibraryBtn { "Del" };
+    juce::Viewport   libraryViewport;
+    LibraryBrowserComponent libraryBrowser;
+
     juce::TextButton browseFolderBtn    { "Open Folder..." };
     juce::TextButton addSelectedFileBtn { "+ Add to Grid" };
     juce::Label folderPathLabel         { {}, "Select sample folder" };
     FileBrowserListModel fileListModel;
     juce::ListBox fileListBox { "FileList", &fileListModel };
 
-    // 5 Module ON/OFF Toggle Buttons above Edit Rack
+    // 5 Module ON/OFF Toggle Buttons
     juce::TextButton togGroupBtn { "Group Editor" };
     juce::TextButton togMapBtn   { "Map Editor" };
     juce::TextButton togWaveBtn  { "Wave Editor" };
     juce::TextButton togFXBtn    { "FX Editor" };
     juce::TextButton togPanelBtn { "Panel Editor" };
 
-    // Scrollable Edit Mode Viewport
+    // Edit Mode Scrollable Viewport
     juce::Viewport editViewport;
     EditRackContent editRack;
 
-    // --- 1. Group Editor ---
+    // 1. Group Editor
     juce::TextButton addGroupBtn     { "+ Add Group" };
     juce::TextButton deleteGroupBtn  { "- Delete" };
     juce::TextButton rrToggleBtn     { "RR: ON (Unlimited)" };
@@ -286,7 +349,7 @@ private:
     juce::Label grpKSNoteLbl { {}, "KS Key" };
     juce::ComboBox grpKSColorBox;
 
-    // --- 2. Mapping Editor ---
+    // 2. Mapping Editor
     MappingGridComponent mappingGrid;
     juce::TextButton autoSpreadBtn { "Auto-Spread" };
     juce::TextButton delZoneBtn    { "Del Zone" };
@@ -297,7 +360,7 @@ private:
                 zLowVLbl { {}, "Low V" }, zHighVLbl { {}, "High V" },
                 zVolLbl { {}, "Vol dB" }, zPanLbl { {}, "Pan" }, zTuneLbl { {}, "Tune" };
 
-    // --- 3. Wave Editor ---
+    // 3. Wave Editor
     WaveEditorComponent waveEditor;
     juce::ToggleButton loopToggle { "Long / Loop" };
     juce::TextButton autoLoopBtn  { "Auto-Loop (Zero-Cross)" };
@@ -305,16 +368,13 @@ private:
     juce::Slider crossfadeSlider, zoomSlider;
     juce::Label cfLbl { {}, "Crossfade" }, zoomLbl { {}, "Zoom" };
 
-    // --- 4. FX & ADSR Rack ---
+    // 4. FX & ADSR Rack
     juce::ToggleButton fxEqOn { "3-Band EQ" }, fxFltOn { "Filter" }, fxDrvOn { "Drive" },
                        fxChoOn { "Chorus" }, fxDlyOn { "Stereo Delay" }, fxRevOn { "Reverb" };
     juce::ComboBox fxFltTypeBox;
-    juce::Slider fxEqLow, fxEqMid, fxEqHigh;
-    juce::Slider fxFltCut, fxFltRes, fxDrvAmt;
-    juce::Slider fxChoRate, fxChoDepth, fxChoMix;
-    juce::Slider fxDlyTime, fxDlyFb, fxDlyMix;
-    juce::Slider fxRevSize, fxRevDamp, fxRevMix;
-    juce::Slider fxAtk, fxDec, fxSus, fxRel;
+    juce::Slider fxEqLow, fxEqMid, fxEqHigh, fxFltCut, fxFltRes, fxDrvAmt;
+    juce::Slider fxChoRate, fxChoDepth, fxChoMix, fxDlyTime, fxDlyFb, fxDlyMix;
+    juce::Slider fxRevSize, fxRevDamp, fxRevMix, fxAtk, fxDec, fxSus, fxRel;
     juce::Label lEqLow{{},"Low"}, lEqMid{{},"Mid"}, lEqHigh{{},"High"},
                 lFltCut{{},"Cut"}, lFltRes{{},"Res"}, lDrvAmt{{},"Drive"},
                 lChoRate{{},"Rate"}, lChoDepth{{},"Depth"}, lChoMix{{},"Mix"},
@@ -322,7 +382,7 @@ private:
                 lRevSize{{},"Size"}, lRevDamp{{},"Damp"}, lRevMix{{},"Mix"},
                 lAtk{{},"Atk"}, lDec{{},"Dec"}, lSus{{},"Sus"}, lRel{{},"Rel"};
 
-    // --- 5. Panel Editor (Inside Edit Mode Only!) ---
+    // 5. Panel Editor
     juce::TextButton peAddKnobBtn   { "+ Knob" };
     juce::TextButton peAddSliderBtn { "+ Slider" };
     juce::TextButton peDelCtrlBtn   { "Delete" };
@@ -336,9 +396,11 @@ private:
     juce::TextEditor peMaxEdit;
     PanelDesignCanvas panelDesignCanvas;
 
-    // --- Clean Front Panel (Performance Mode - NO Add/Customize buttons!) ---
-    juce::Component frontPanelContainer;
-    std::vector<std::unique_ptr<PerformanceMacroWidget>> perfMacros;
+    // Front Panel: 16-Slot Kontakt Multi-Rack
+    juce::TextButton addNewSlotBtn { "+ Add New Slot (Max 16)" };
+    juce::Viewport   multiRackViewport;
+    juce::Component  multiRackContent;
+    std::vector<std::unique_ptr<MultiRackSlotCard>> rackCards;
 
     // Bottom Piano Keyboard
     ColoredMidiKeyboardComponent keyboard;
