@@ -23,7 +23,7 @@ juce_add_plugin(NoiseMu6ixSampler
     COPY_PLUGIN_AFTER_BUILD FALSE
     PLUGIN_MANUFACTURER_CODE Nm6s
     PLUGIN_CODE Nm6p
-    FORMATS VST3
+    FORMATS VST3 Standalone
     PRODUCT_NAME "Noise Mu6ix Sampler"
 )
 
