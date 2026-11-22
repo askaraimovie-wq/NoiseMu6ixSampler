@@ -3,7 +3,7 @@
 #include "PluginProcessor.h"
 #include <functional>
 
-// ==================== Logo Button (Click for UI Size % Menu) ====================
+// ==================== Logo Button (Click to open UI Size % Menu) ====================
 class LogoSizeButton : public juce::Component
 {
 public:
@@ -24,7 +24,7 @@ struct LibraryEntry
     juce::File coverImageFile;
     juce::Image cachedImage;
     bool expanded = false;
-    juce::Array<juce::File> instruments; // .nm6i files inside folder
+    juce::Array<juce::File> instruments;
 };
 
 class LibraryBrowserComponent : public juce::Component
@@ -50,7 +50,6 @@ class ColoredMidiKeyboardComponent : public juce::MidiKeyboardComponent
 {
 public:
     ColoredMidiKeyboardComponent (NoiseMu6ixSamplerAudioProcessor& p, juce::MidiKeyboardState& state);
-    int activeSlotIdx = 0;
     int activeFilterGroupIdx = 0;
 
 protected:
@@ -72,7 +71,6 @@ public:
     void paint (juce::Graphics& g) override;
     void mouseDown (const juce::MouseEvent& e) override;
 
-    int activeSlotIdx = 0;
     int selectedGroupIdx = 0;
     std::function<void (int)> onGroupSelected;
 
@@ -96,7 +94,6 @@ public:
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void filesDropped (const juce::StringArray& files, int x, int y) override;
 
-    int activeSlotIdx = 0;
     int selectedZoneIdx = -1;
     int activeGroupFilter = 0;
     int targetDropGroup = 0;
@@ -115,7 +112,6 @@ private:
     DragMode dragMode = DragMode::None;
     int dragStartNote = 60, dragStartVel = 64;
     int origLowK = 0, origHighK = 127, origLowV = 0, origHighV = 127, origRoot = 60;
-
     NoiseMu6ixSamplerAudioProcessor& processor;
 };
 
@@ -140,51 +136,21 @@ private:
     float zoomFactor = 1.0f;
 };
 
-// ==================== Clean Performance Macro Widget ====================
+// ==================== Clean Performance Knob/Slider (Front Panel Only) ====================
 class PerformanceMacroWidget : public juce::Component
 {
 public:
-    PerformanceMacroWidget (NoiseMu6ixSamplerAudioProcessor& p, int slotIndex, int macroIndex);
+    PerformanceMacroWidget (NoiseMu6ixSamplerAudioProcessor& p, int slotIndex);
     void resized() override;
     void paint (juce::Graphics& g) override;
     void syncFromConfig();
 
 private:
     NoiseMu6ixSamplerAudioProcessor& processor;
-    int slotIdx;
-    int mIdx;
+    int index;
     juce::Label nameLabel;
     juce::Slider slider;
-};
-
-// ==================== Single Slot Card in the 16-Slot Front Panel Multi-Rack ====================
-class MultiRackSlotCard : public juce::Component
-{
-public:
-    MultiRackSlotCard (NoiseMu6ixSamplerAudioProcessor& p, int sIdx);
-    void paint (juce::Graphics& g) override;
-    void resized() override;
-    void syncFromSlot();
-
-    int slotIdx;
-    std::function<void (int)> onEditClicked;
-    std::function<void (int)> onSelectClicked;
-    std::function<void (int)> onCloseClicked;
-
-private:
-    NoiseMu6ixSamplerAudioProcessor& processor;
-    juce::TextButton editBtn  { "Edit" };
-    juce::Label      titleLbl;
-    juce::ComboBox   midiChBox;
-    juce::ComboBox   outBusBox;
-    juce::Slider     volSlider;
-    juce::Slider     panSlider;
-    juce::TextButton muteBtn  { "M" };
-    juce::TextButton soloBtn  { "S" };
-    juce::TextButton closeBtn { "X" };
-
-    juce::Component  panelBody;
-    std::vector<std::unique_ptr<PerformanceMacroWidget>> macroWidgets;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
 };
 
 // ==================== Draggable & Resizable Panel Editor Canvas ====================
@@ -198,7 +164,6 @@ public:
     void mouseDrag (const juce::MouseEvent& e) override;
     void mouseUp   (const juce::MouseEvent&) override { dragOp = DragOp::None; }
 
-    int activeSlotIdx = 0;
     int selectedMacroIdx = 0;
     std::function<void (int)> onSelectionChanged;
     std::function<void()> onLayoutChanged;
@@ -254,15 +219,14 @@ private:
 
     void setUIScale (float newScale);
     void showScaleMenu();
-    void setActiveSlot (int newSlotIdx);
     void updateModeVisibility();
     void updateSidebarVisibility();
-    void rebuildMultiRackCards();
     void refreshGroupUI();
     void refreshSelectedZoneUI();
     void refreshFXUI();
     void refreshPanelEditorInspector();
     void applyPanelEditorInspector();
+    void syncFrontPanelWidgets();
     void applyZoneBarToSelected();
     void applyGroupInspector();
     void applyFXToProcessor();
@@ -284,9 +248,8 @@ private:
     float uiScale = 1.0f;
     RootUICanvas rootCanvas;
 
-    bool inEditMode = false; // Start in Kontakt Multi-Rack Front Panel!
+    bool inEditMode = true;
     bool sidebarShowLibraries = true;
-    int activeSlotIdx = 0;
     int selectedGroupIdx = 0;
 
     // 5 Module Toggle States
@@ -298,14 +261,13 @@ private:
 
     // Top Header Bar
     LogoSizeButton logoBtn;
-    juce::TextButton modeToggleBtn { "Edit Mode" };
+    juce::TextButton modeToggleBtn { "Front Panel" };
     juce::TextButton saveInstBtn   { "Save .nm6i" };
     juce::TextButton loadInstBtn   { "Load .nm6i" };
-    juce::ComboBox   activeSlotBox;
-    juce::Label versionLabel       { {}, "v1.0.7" };
+    juce::Label versionLabel       { {}, "v1.0.8" };
     juce::Label voicesLabel        { {}, "Voices: 0" };
 
-    // Left Sidebar: Libraries (Banner + Expandable) | Files
+    // Left Sidebar: Libraries (Banner Photo + Expandable) | Files
     juce::TextButton sideLibTabBtn    { "Libraries" };
     juce::TextButton sideFilesTabBtn  { "Files" };
     juce::TextButton addLibraryBtn    { "+ Add Lib" };
@@ -396,11 +358,9 @@ private:
     juce::TextEditor peMaxEdit;
     PanelDesignCanvas panelDesignCanvas;
 
-    // Front Panel: 16-Slot Kontakt Multi-Rack
-    juce::TextButton addNewSlotBtn { "+ Add New Slot (Max 16)" };
-    juce::Viewport   multiRackViewport;
-    juce::Component  multiRackContent;
-    std::vector<std::unique_ptr<MultiRackSlotCard>> rackCards;
+    // Clean Front Panel (Single Instrument Performance UI)
+    juce::Component frontPanelContainer;
+    std::vector<std::unique_ptr<PerformanceMacroWidget>> perfMacros;
 
     // Bottom Piano Keyboard
     ColoredMidiKeyboardComponent keyboard;

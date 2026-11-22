@@ -21,7 +21,7 @@ void LogoSizeButton::paint (juce::Graphics& g)
     g.drawText ("N6", 4, 5, 24, 24, juce::Justification::centred);
 
     g.setColour (juce::Colour (0xfff0c078));
-    g.setFont (juce::Font (18.0f, juce::Font::bold));
+    g.setFont (juce::Font (18.5f, juce::Font::bold));
     g.drawText ("NOISE MU6IX", 34, 2, 145, 20, juce::Justification::centredLeft);
 
     g.setColour (juce::Colour (0xff9aa0ae));
@@ -63,7 +63,6 @@ void LibraryBrowserComponent::paint (juce::Graphics& g)
         juce::Rectangle<int> bRect (4, y, w, bannerH);
         bool isSel = (i == selectedLibraryIdx);
 
-        // Draw Banner Photo or stylish gradient
         if (lib.cachedImage.isValid())
         {
             g.drawImage (lib.cachedImage, bRect.toFloat(), juce::RectanglePlacement::fillDestination);
@@ -81,7 +80,6 @@ void LibraryBrowserComponent::paint (juce::Graphics& g)
         g.setColour (isSel ? juce::Colour (0xffd9a05b) : juce::Colour (0xff4a4f5c));
         g.drawRoundedRectangle (bRect.toFloat(), 4.0f, isSel ? 1.8f : 1.0f);
 
-        // Title & expand arrow
         g.setColour (juce::Colours::white);
         g.setFont (juce::Font (13.0f, juce::Font::bold));
         g.drawText (lib.title, bRect.reduced (8, 4).removeFromTop (22), juce::Justification::centredLeft, true);
@@ -93,7 +91,6 @@ void LibraryBrowserComponent::paint (juce::Graphics& g)
 
         y += bannerH + 4;
 
-        // Expanded instruments list
         if (lib.expanded)
         {
             if (lib.instruments.isEmpty())
@@ -149,10 +146,7 @@ void LibraryBrowserComponent::mouseDown (const juce::MouseEvent& e)
 
         if (lib.expanded)
         {
-            if (lib.instruments.isEmpty())
-            {
-                y += itemH + 4;
-            }
+            if (lib.instruments.isEmpty()) y += itemH + 4;
             else
             {
                 for (int j = 0; j < lib.instruments.size(); ++j)
@@ -205,25 +199,23 @@ bool ColoredMidiKeyboardComponent::getKeyColourInfo (int note, juce::Colour& out
 {
     const juce::ScopedTryLock sl (processor.dataLock);
     if (!sl.isLocked()) return false;
-    const auto& slot = processor.getSlot (activeSlotIdx);
-    if (!slot.loaded) return false;
 
-    if (slot.keyswitchMasterOn.load())
+    if (processor.keyswitchMasterOn.load())
     {
-        for (const auto& g : slot.groups)
+        for (const auto& g : processor.groups)
         {
             if (g.keyswitchEnabled && g.keyswitchNote == note)
             {
                 isKeyswitch = true;
                 outCol = NoiseMu6ixSamplerAudioProcessor::getKeyswitchPaletteColour (g.keyswitchColorIdx);
-                if (slot.activeKeyswitchNote.load() == note)
+                if (processor.activeKeyswitchNote.load() == note)
                     outCol = outCol.brighter (0.35f);
                 return true;
             }
         }
     }
 
-    for (const auto& z : slot.zones)
+    for (const auto& z : processor.zones)
     {
         if (activeFilterGroupIdx >= 0 && z->groupIndex != activeFilterGroupIdx)
             continue;
@@ -299,16 +291,15 @@ void GroupCardsComponent::paint (juce::Graphics& g)
     g.drawRect (getLocalBounds(), 1);
 
     const juce::ScopedLock sl (processor.dataLock);
-    const auto& slot = processor.getSlot (activeSlotIdx);
-    for (int i = 0; i < (int)slot.groups.size(); ++i)
+    for (int i = 0; i < (int)processor.groups.size(); ++i)
     {
         auto r = getCardRect (i);
         if (r.getY() >= getHeight()) break;
 
-        const auto& grp = slot.groups[(size_t)i];
+        const auto& grp = processor.groups[(size_t)i];
         bool isSel = (i == selectedGroupIdx);
         int zCount = 0;
-        for (auto& z : slot.zones) if (z->groupIndex == i) ++zCount;
+        for (auto& z : processor.zones) if (z->groupIndex == i) ++zCount;
 
         g.setColour (isSel ? juce::Colour (0xffd9a05b) : juce::Colour (0xff2e323c));
         g.fillRoundedRectangle (r.toFloat(), 4.0f);
@@ -337,8 +328,7 @@ void GroupCardsComponent::paint (juce::Graphics& g)
 void GroupCardsComponent::mouseDown (const juce::MouseEvent& e)
 {
     const juce::ScopedLock sl (processor.dataLock);
-    const auto& slot = processor.getSlot (activeSlotIdx);
-    for (int i = 0; i < (int)slot.groups.size(); ++i)
+    for (int i = 0; i < (int)processor.groups.size(); ++i)
     {
         if (getCardRect (i).contains (e.getPosition()))
         {
@@ -390,10 +380,9 @@ MappingGridComponent::DragMode MappingGridComponent::hitTestDragMode (const juce
 void MappingGridComponent::mouseMove (const juce::MouseEvent& e)
 {
     const juce::ScopedLock sl (processor.dataLock);
-    const auto& slot = processor.getSlot (activeSlotIdx);
-    for (int i = (int)slot.zones.size() - 1; i >= 0; --i)
+    for (int i = (int)processor.zones.size() - 1; i >= 0; --i)
     {
-        const auto& z = slot.zones[(size_t)i];
+        const auto& z = processor.zones[(size_t)i];
         if (activeGroupFilter >= 0 && z->groupIndex != activeGroupFilter) continue;
         auto r = getZoneRect (*z);
         if (r.contains (e.position))
@@ -439,23 +428,23 @@ void MappingGridComponent::paint (juce::Graphics& g)
         g.drawHorizontalLine ((int)((1.0f - (float)v / 127.0f) * h), 0.0f, w);
 
     const juce::ScopedLock sl (processor.dataLock);
-    const auto& slot = processor.getSlot (activeSlotIdx);
     int visibleCount = 0;
-    for (auto& z : slot.zones)
+    for (auto& z : processor.zones)
         if (activeGroupFilter < 0 || z->groupIndex == activeGroupFilter) ++visibleCount;
 
     if (visibleCount == 0)
     {
         g.setColour (juce::Colour (0xffb0b5c0));
         g.setFont (13.0f);
-        g.drawFittedText ("Drag & Drop WAV Samples Here for this Group", getLocalBounds(), juce::Justification::centred, 2);
+        g.drawFittedText ("Drag & Drop WAV Samples Here for this Group (or use Left Files Browser)",
+                          getLocalBounds(), juce::Justification::centred, 2);
         return;
     }
 
     static const juce::uint32 palette[6] = { 0xffd9a05b, 0xff5ba8d9, 0xff7cc47f, 0xffc97575, 0xffa77fd4, 0xffd4c25b };
-    for (size_t i = 0; i < slot.zones.size(); ++i)
+    for (size_t i = 0; i < processor.zones.size(); ++i)
     {
-        const auto& z = slot.zones[i];
+        const auto& z = processor.zones[i];
         if (activeGroupFilter >= 0 && z->groupIndex != activeGroupFilter) continue;
 
         auto rect = getZoneRect (*z);
@@ -492,12 +481,11 @@ void MappingGridComponent::paint (juce::Graphics& g)
 void MappingGridComponent::mouseDown (const juce::MouseEvent& e)
 {
     const juce::ScopedLock sl (processor.dataLock);
-    const auto& slot = processor.getSlot (activeSlotIdx);
     int hitIdx = -1;
     juce::Rectangle<float> hitRect;
-    for (int i = (int)slot.zones.size() - 1; i >= 0; --i)
+    for (int i = (int)processor.zones.size() - 1; i >= 0; --i)
     {
-        const auto& z = slot.zones[(size_t)i];
+        const auto& z = processor.zones[(size_t)i];
         if (activeGroupFilter >= 0 && z->groupIndex != activeGroupFilter) continue;
         auto r = getZoneRect (*z);
         if (r.contains (e.position)) { hitIdx = i; hitRect = r; break; }
@@ -507,7 +495,7 @@ void MappingGridComponent::mouseDown (const juce::MouseEvent& e)
     dragMode = DragMode::None;
     if (hitIdx >= 0)
     {
-        auto& z = slot.zones[(size_t)hitIdx];
+        auto& z = processor.zones[(size_t)hitIdx];
         origLowK = z->lowKey; origHighK = z->highKey;
         origLowV = z->lowVel; origHighV = z->highVel; origRoot = z->rootNote;
         dragStartNote = xToNote (e.position.x);
@@ -522,10 +510,9 @@ void MappingGridComponent::mouseDrag (const juce::MouseEvent& e)
 {
     if (selectedZoneIdx < 0 || dragMode == DragMode::None) return;
     const juce::ScopedLock sl (processor.dataLock);
-    auto& slot = processor.getSlot (activeSlotIdx);
-    if (selectedZoneIdx >= (int)slot.zones.size()) return;
+    if (selectedZoneIdx >= (int)processor.zones.size()) return;
 
-    auto& z = slot.zones[(size_t)selectedZoneIdx];
+    auto& z = processor.zones[(size_t)selectedZoneIdx];
     int curNote = xToNote (e.position.x);
     int curVel  = yToVel (e.position.y);
     int dNote   = curNote - dragStartNote;
@@ -571,12 +558,11 @@ void MappingGridComponent::filesDropped (const juce::StringArray& files, int x, 
     int grp = (activeGroupFilter >= 0) ? activeGroupFilter : targetDropGroup;
     for (auto& f : files)
     {
-        if (f.endsWithIgnoreCase (".nm6i")) processor.loadSlotMonolith (activeSlotIdx, juce::File (f));
-        else processor.loadSampleFile (activeSlotIdx, juce::File (f), grp, files.size() > 1, files.size() == 1 ? dropNote : -1);
+        if (f.endsWithIgnoreCase (".nm6i")) processor.loadMonolithInstrument (juce::File (f));
+        else processor.loadSampleFile (juce::File (f), grp, files.size() > 1, files.size() == 1 ? dropNote : -1);
     }
     const juce::ScopedLock sl (processor.dataLock);
-    auto& slot = processor.getSlot (activeSlotIdx);
-    if (!slot.zones.empty()) selectedZoneIdx = (int)slot.zones.size() - 1;
+    if (!processor.zones.empty()) selectedZoneIdx = (int)processor.zones.size() - 1;
     repaint();
     if (onZoneChanged) onZoneChanged();
 }
@@ -675,33 +661,31 @@ void WaveEditorComponent::mouseDrag (const juce::MouseEvent& e)
     if (onWaveChanged) onWaveChanged();
 }
 
-// ==================== PerformanceMacroWidget ====================
-PerformanceMacroWidget::PerformanceMacroWidget (NoiseMu6ixSamplerAudioProcessor& p, int slotIndex, int macroIndex)
-    : processor (p), slotIdx (slotIndex), mIdx (macroIndex)
+// ==================== PerformanceMacroWidget (Clean Front Panel) ====================
+PerformanceMacroWidget::PerformanceMacroWidget (NoiseMu6ixSamplerAudioProcessor& p, int slotIndex)
+    : processor (p), index (slotIndex)
 {
     nameLabel.setJustificationType (juce::Justification::centred);
     nameLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-    nameLabel.setFont (juce::Font (12.0f, juce::Font::bold));
+    nameLabel.setFont (juce::Font (13.0f, juce::Font::bold));
     addAndMakeVisible (nameLabel);
 
-    slider.setRange (0.0, 1.0, 0.001);
-    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 44, 15);
+    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 48, 16);
     slider.setColour (juce::Slider::thumbColourId, juce::Colour (0xffd9a05b));
     slider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xffd9a05b));
-    slider.onValueChange = [this] {
-        processor.getSlot (slotIdx).macroConfigs[mIdx].value = (float)slider.getValue();
-    };
     addAndMakeVisible (slider);
+
+    attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        processor.apvts, "macro" + juce::String (index), slider);
+
     syncFromConfig();
 }
 
 void PerformanceMacroWidget::syncFromConfig()
 {
-    const auto& cfg = processor.getSlot (slotIdx).macroConfigs[mIdx];
-    setVisible (cfg.visible);
+    const auto& cfg = processor.macroConfigs[index];
     nameLabel.setText (cfg.name, juce::dontSendNotification);
     slider.setSliderStyle (cfg.isSlider ? juce::Slider::LinearVertical : juce::Slider::RotaryHorizontalVerticalDrag);
-    slider.setValue (cfg.value, juce::dontSendNotification);
     setBounds (cfg.posX, cfg.posY, cfg.width, cfg.height);
     repaint();
 }
@@ -709,125 +693,17 @@ void PerformanceMacroWidget::syncFromConfig()
 void PerformanceMacroWidget::paint (juce::Graphics& g)
 {
     g.setColour (juce::Colour (0xff232730));
-    g.fillRoundedRectangle (getLocalBounds().toFloat().reduced (1.0f), 6.0f);
+    g.fillRoundedRectangle (getLocalBounds().toFloat().reduced (1.0f), 7.0f);
     g.setColour (juce::Colour (0xff454b57));
-    g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (1.0f), 6.0f, 1.0f);
+    g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (1.0f), 7.0f, 1.2f);
 }
 
 void PerformanceMacroWidget::resized()
 {
-    auto r = getLocalBounds().reduced (5);
-    nameLabel.setBounds (r.removeFromTop (18));
+    auto r = getLocalBounds().reduced (6);
+    nameLabel.setBounds (r.removeFromTop (20));
     r.removeFromTop (2);
     slider.setBounds (r);
-}
-
-// ==================== MultiRackSlotCard (Kontakt Multi-Rack Instrument Card) ====================
-MultiRackSlotCard::MultiRackSlotCard (NoiseMu6ixSamplerAudioProcessor& p, int sIdx)
-    : slotIdx (sIdx), processor (p)
-{
-    editBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffb86b28));
-    editBtn.onClick = [this] { if (onEditClicked) onEditClicked (slotIdx); };
-    addAndMakeVisible (editBtn);
-
-    titleLbl.setFont (juce::Font (13.0f, juce::Font::bold));
-    titleLbl.setColour (juce::Label::textColourId, juce::Colours::white);
-    addAndMakeVisible (titleLbl);
-
-    midiChBox.addItem ("Omni", 1);
-    for (int ch = 1; ch <= 16; ++ch) midiChBox.addItem ("Ch " + juce::String (ch), ch + 1);
-    midiChBox.onChange = [this] { processor.getSlot (slotIdx).midiChannel.store (midiChBox.getSelectedId() - 1); };
-    addAndMakeVisible (midiChBox);
-
-    for (int o = 1; o <= 16; ++o) outBusBox.addItem ("Out " + juce::String (o), o);
-    outBusBox.onChange = [this] { processor.getSlot (slotIdx).outputBusIndex.store (outBusBox.getSelectedId() - 1); };
-    addAndMakeVisible (outBusBox);
-
-    volSlider.setRange (-24.0, 12.0, 0.1);
-    volSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    volSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-    volSlider.onValueChange = [this] { processor.getSlot (slotIdx).slotVolumeDb.store ((float)volSlider.getValue()); };
-    addAndMakeVisible (volSlider);
-
-    panSlider.setRange (-1.0, 1.0, 0.01);
-    panSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    panSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-    panSlider.onValueChange = [this] { processor.getSlot (slotIdx).slotPan.store ((float)panSlider.getValue()); };
-    addAndMakeVisible (panSlider);
-
-    muteBtn.onClick = [this] {
-        auto& s = processor.getSlot (slotIdx);
-        s.slotMute.store (!s.slotMute.load());
-        syncFromSlot();
-    };
-    addAndMakeVisible (muteBtn);
-
-    soloBtn.onClick = [this] {
-        auto& s = processor.getSlot (slotIdx);
-        s.slotSolo.store (!s.slotSolo.load());
-        syncFromSlot();
-    };
-    addAndMakeVisible (soloBtn);
-
-    closeBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff662c2c));
-    closeBtn.onClick = [this] { if (onCloseClicked) onCloseClicked (slotIdx); };
-    addAndMakeVisible (closeBtn);
-
-    addAndMakeVisible (panelBody);
-    for (int m = 0; m < InstrumentSlot::numMacros; ++m)
-    {
-        auto w = std::make_unique<PerformanceMacroWidget> (processor, slotIdx, m);
-        panelBody.addAndMakeVisible (*w);
-        macroWidgets.push_back (std::move (w));
-    }
-
-    syncFromSlot();
-}
-
-void MultiRackSlotCard::syncFromSlot()
-{
-    const auto& s = processor.getSlot (slotIdx);
-    titleLbl.setText (juce::String (slotIdx + 1) + ". " + s.instrumentName, juce::dontSendNotification);
-    midiChBox.setSelectedId (s.midiChannel.load() + 1, juce::dontSendNotification);
-    outBusBox.setSelectedId (s.outputBusIndex.load() + 1, juce::dontSendNotification);
-    volSlider.setValue (s.slotVolumeDb.load(), juce::dontSendNotification);
-    panSlider.setValue (s.slotPan.load(), juce::dontSendNotification);
-    muteBtn.setColour (juce::TextButton::buttonColourId, s.slotMute.load() ? juce::Colour (0xffc94040) : juce::Colour (0xff353944));
-    soloBtn.setColour (juce::TextButton::buttonColourId, s.slotSolo.load() ? juce::Colour (0xffd9a05b) : juce::Colour (0xff353944));
-
-    for (auto& mw : macroWidgets) mw->syncFromConfig();
-    repaint();
-}
-
-void MultiRackSlotCard::paint (juce::Graphics& g)
-{
-    g.setColour (juce::Colour (0xff1c1f26));
-    g.fillRoundedRectangle (getLocalBounds().toFloat(), 6.0f);
-
-    // Kontakt-style Instrument Header Strip
-    g.setColour (juce::Colour (0xff2b2f3a));
-    g.fillRoundedRectangle (0.0f, 0.0f, (float)getWidth(), 32.0f, 6.0f);
-
-    g.setColour (juce::Colour (0xff4e5463));
-    g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (0.5f), 6.0f, 1.2f);
-}
-
-void MultiRackSlotCard::resized()
-{
-    auto r = getLocalBounds();
-    auto hdr = r.removeFromTop (32).reduced (5, 4);
-
-    editBtn.setBounds  (hdr.removeFromLeft (46)); hdr.removeFromLeft (6);
-    closeBtn.setBounds (hdr.removeFromRight (24)); hdr.removeFromRight (4);
-    soloBtn.setBounds  (hdr.removeFromRight (24)); hdr.removeFromRight (3);
-    muteBtn.setBounds  (hdr.removeFromRight (24)); hdr.removeFromRight (6);
-    panSlider.setBounds(hdr.removeFromRight (55)); hdr.removeFromRight (4);
-    volSlider.setBounds(hdr.removeFromRight (70)); hdr.removeFromRight (6);
-    outBusBox.setBounds(hdr.removeFromRight (72)); hdr.removeFromRight (4);
-    midiChBox.setBounds(hdr.removeFromRight (68)); hdr.removeFromRight (6);
-    titleLbl.setBounds (hdr);
-
-    panelBody.setBounds (r.reduced (4));
 }
 
 // ==================== PanelDesignCanvas ====================
@@ -842,10 +718,9 @@ void PanelDesignCanvas::paint (juce::Graphics& g)
     g.setColour (juce::Colour (0xff4a4f5a));
     g.drawRect (getLocalBounds(), 1);
 
-    const auto& slot = processor.getSlot (activeSlotIdx);
-    for (int i = 0; i < InstrumentSlot::numMacros; ++i)
+    for (int i = 0; i < NoiseMu6ixSamplerAudioProcessor::numMacros; ++i)
     {
-        const auto& cfg = slot.macroConfigs[i];
+        const auto& cfg = processor.macroConfigs[i];
         if (!cfg.visible) continue;
 
         juce::Rectangle<int> r (cfg.posX, cfg.posY, cfg.width, cfg.height);
@@ -867,7 +742,7 @@ void PanelDesignCanvas::paint (juce::Graphics& g)
         g.drawText (juce::String (pMin) + "% - " + juce::String (pMax) + "%",
                     r.reduced (4, 3).removeFromBottom (14), juce::Justification::centred, true);
 
-        auto body = r.reduced (12, 20);
+        auto body = r.reduced (14, 22);
         if (cfg.isSlider)
         {
             float cx = (float)body.getCentreX();
@@ -897,10 +772,9 @@ void PanelDesignCanvas::paint (juce::Graphics& g)
 
 void PanelDesignCanvas::mouseMove (const juce::MouseEvent& e)
 {
-    const auto& slot = processor.getSlot (activeSlotIdx);
-    for (int i = InstrumentSlot::numMacros - 1; i >= 0; --i)
+    for (int i = NoiseMu6ixSamplerAudioProcessor::numMacros - 1; i >= 0; --i)
     {
-        const auto& cfg = slot.macroConfigs[i];
+        const auto& cfg = processor.macroConfigs[i];
         if (!cfg.visible) continue;
         juce::Rectangle<int> r (cfg.posX, cfg.posY, cfg.width, cfg.height);
         if (r.contains (e.getPosition()))
@@ -918,10 +792,9 @@ void PanelDesignCanvas::mouseMove (const juce::MouseEvent& e)
 void PanelDesignCanvas::mouseDown (const juce::MouseEvent& e)
 {
     dragOp = DragOp::None;
-    auto& slot = processor.getSlot (activeSlotIdx);
-    for (int i = InstrumentSlot::numMacros - 1; i >= 0; --i)
+    for (int i = NoiseMu6ixSamplerAudioProcessor::numMacros - 1; i >= 0; --i)
     {
-        auto& cfg = slot.macroConfigs[i];
+        auto& cfg = processor.macroConfigs[i];
         if (!cfg.visible) continue;
         juce::Rectangle<int> r (cfg.posX, cfg.posY, cfg.width, cfg.height);
         if (r.contains (e.getPosition()))
@@ -940,8 +813,8 @@ void PanelDesignCanvas::mouseDown (const juce::MouseEvent& e)
 
 void PanelDesignCanvas::mouseDrag (const juce::MouseEvent& e)
 {
-    if (dragOp == DragOp::None || selectedMacroIdx < 0 || selectedMacroIdx >= InstrumentSlot::numMacros) return;
-    auto& cfg = processor.getSlot (activeSlotIdx).macroConfigs[selectedMacroIdx];
+    if (dragOp == DragOp::None || selectedMacroIdx < 0 || selectedMacroIdx >= NoiseMu6ixSamplerAudioProcessor::numMacros) return;
+    auto& cfg = processor.macroConfigs[selectedMacroIdx];
     auto delta = e.getPosition() - dragStartMouse;
     if (dragOp == DragOp::Move)
     {
@@ -950,8 +823,8 @@ void PanelDesignCanvas::mouseDrag (const juce::MouseEvent& e)
     }
     else if (dragOp == DragOp::Resize)
     {
-        cfg.width  = juce::jlimit (60, std::max (60, getWidth() - cfg.posX - 4),  origW + delta.x);
-        cfg.height = juce::jlimit (70, std::max (70, getHeight() - cfg.posY - 4), origH + delta.y);
+        cfg.width  = juce::jlimit (65, std::max (65, getWidth() - cfg.posX - 4),  origW + delta.x);
+        cfg.height = juce::jlimit (75, std::max (75, getHeight() - cfg.posY - 4), origH + delta.y);
     }
     repaint();
     if (onLayoutChanged) onLayoutChanged();
@@ -989,7 +862,7 @@ void EditRackContent::paint (juce::Graphics& g)
     drawHeader (mapHeaderY,   "MAPPING EDITOR  (Shows Selected Group | Blue Keys = Mapped)");
     drawHeader (waveHeaderY,  "WAVE EDITOR  (Zero-Cross Auto-Loop & Sample Start/End)");
     drawHeader (fxHeaderY,    "FX & ADSR RACK  (EQ, Filter, Drive, Chorus, Delay, Reverb, ADSR)");
-    drawHeader (panelHeaderY, "PANEL EDITOR  (Compact Slot Panel: 740x210 | Drag, Resize & Set % Range)");
+    drawHeader (panelHeaderY, "PANEL EDITOR  (Drag to Move | Drag Corner to Resize | Set From-To % Range)");
 }
 
 // ==================== Main Editor ====================
@@ -1007,24 +880,22 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     modeToggleBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffb86b28));
     modeToggleBtn.onClick = [this] {
         inEditMode = !inEditMode;
-        modeToggleBtn.setButtonText (inEditMode ? "Multi Rack" : "Edit Mode");
+        modeToggleBtn.setButtonText (inEditMode ? "Front Panel" : "Edit Mode");
         updateModeVisibility();
     };
     rootCanvas.addAndMakeVisible (modeToggleBtn);
 
     saveInstBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff2b5c3f));
     saveInstBtn.onClick = [this] {
-        fileChooser = std::make_unique<juce::FileChooser> ("Save Slot as .nm6i Instrument", juce::File{}, "*.nm6i");
+        fileChooser = std::make_unique<juce::FileChooser> ("Save Compressed Instrument (.nm6i)", juce::File{}, "*.nm6i");
         fileChooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
             [this](const juce::FileChooser& fc) {
                 auto f = fc.getResult();
                 if (f != juce::File{})
                 {
                     if (!f.hasFileExtension (".nm6i")) f = f.withFileExtension (".nm6i");
-                    if (processor.saveSlotMonolith (activeSlotIdx, f))
+                    if (processor.saveMonolithInstrument (f))
                     {
-                        rebuildMultiRackCards();
-                        // Refresh any library entry pointing to that folder
                         for (auto& lib : libraryBrowser.libraries)
                             if (lib.folder == f.getParentDirectory()) scanLibraryEntry (lib);
                         libraryBrowser.refreshHeight();
@@ -1036,32 +907,20 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
 
     loadInstBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff2b475c));
     loadInstBtn.onClick = [this] {
-        fileChooser = std::make_unique<juce::FileChooser> ("Load .nm6i into Current Slot", juce::File{}, "*.nm6i");
+        fileChooser = std::make_unique<juce::FileChooser> ("Load Compressed Instrument (.nm6i)", juce::File{}, "*.nm6i");
         fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
             [this](const juce::FileChooser& fc) {
-                if (processor.loadSlotMonolith (activeSlotIdx, fc.getResult()))
+                if (processor.loadMonolithInstrument (fc.getResult()))
                 {
-                    setActiveSlot (activeSlotIdx);
-                    rebuildMultiRackCards();
+                    selectedGroupIdx = 0;
+                    mappingGrid.selectedZoneIdx = -1;
+                    refreshGroupUI(); refreshSelectedZoneUI(); refreshFXUI();
+                    refreshPanelEditorInspector(); syncFrontPanelWidgets();
+                    mappingGrid.repaint(); keyboard.repaint();
                 }
             });
     };
     rootCanvas.addAndMakeVisible (loadInstBtn);
-
-    for (int i = 0; i < NoiseMu6ixSamplerAudioProcessor::maxSlots; ++i)
-        activeSlotBox.addItem ("Slot " + juce::String (i + 1), i + 1);
-    activeSlotBox.setSelectedId (1, juce::dontSendNotification);
-    activeSlotBox.onChange = [this] {
-        int sIdx = activeSlotBox.getSelectedId() - 1;
-        if (!processor.getSlot (sIdx).loaded)
-        {
-            const juce::ScopedLock sl (processor.dataLock);
-            processor.getSlot (sIdx).initDefault (sIdx);
-        }
-        setActiveSlot (sIdx);
-        rebuildMultiRackCards();
-    };
-    rootCanvas.addAndMakeVisible (activeSlotBox);
 
     versionLabel.setJustificationType (juce::Justification::centredRight);
     versionLabel.setColour (juce::Label::textColourId, juce::Colour (0xff8d93a1));
@@ -1102,12 +961,13 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     rootCanvas.addAndMakeVisible (removeLibraryBtn);
 
     libraryBrowser.onInstrumentClicked = [this](const juce::File& instFile) {
-        int targetSlot = processor.findFirstEmptySlot();
-        if (targetSlot < 0) targetSlot = activeSlotIdx;
-        if (processor.loadSlotMonolith (targetSlot, instFile))
+        if (processor.loadMonolithInstrument (instFile))
         {
-            setActiveSlot (targetSlot);
-            rebuildMultiRackCards();
+            selectedGroupIdx = 0;
+            mappingGrid.selectedZoneIdx = -1;
+            refreshGroupUI(); refreshSelectedZoneUI(); refreshFXUI();
+            refreshPanelEditorInspector(); syncFrontPanelWidgets();
+            mappingGrid.repaint(); keyboard.repaint();
         }
     };
     libraryViewport.setViewedComponent (&libraryBrowser, false);
@@ -1123,22 +983,12 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
         if (row >= 0 && row < fileListModel.files.size())
         {
             auto f = fileListModel.files[row];
-            if (f.hasFileExtension (".nm6i"))
-            {
-                int targetSlot = processor.findFirstEmptySlot();
-                if (targetSlot < 0) targetSlot = activeSlotIdx;
-                processor.loadSlotMonolith (targetSlot, f);
-                setActiveSlot (targetSlot);
-                rebuildMultiRackCards();
-            }
-            else
-            {
-                processor.loadSampleFile (activeSlotIdx, f, selectedGroupIdx, true, -1);
-                const juce::ScopedLock sl (processor.dataLock);
-                mappingGrid.selectedZoneIdx = (int)processor.getSlot (activeSlotIdx).zones.size() - 1;
-                refreshGroupUI(); refreshSelectedZoneUI();
-                mappingGrid.repaint(); keyboard.repaint();
-            }
+            if (f.hasFileExtension (".nm6i")) processor.loadMonolithInstrument (f);
+            else processor.loadSampleFile (f, selectedGroupIdx, true, -1);
+            const juce::ScopedLock sl (processor.dataLock);
+            mappingGrid.selectedZoneIdx = (int)processor.zones.size() - 1;
+            refreshGroupUI(); refreshSelectedZoneUI(); refreshFXUI(); syncFrontPanelWidgets();
+            mappingGrid.repaint(); keyboard.repaint();
         }
     };
     rootCanvas.addAndMakeVisible (addSelectedFileBtn);
@@ -1147,22 +997,12 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     rootCanvas.addAndMakeVisible (folderPathLabel);
 
     fileListModel.onFileDoubleClicked = [this](const juce::File& f) {
-        if (f.hasFileExtension (".nm6i"))
-        {
-            int targetSlot = processor.findFirstEmptySlot();
-            if (targetSlot < 0) targetSlot = activeSlotIdx;
-            processor.loadSlotMonolith (targetSlot, f);
-            setActiveSlot (targetSlot);
-            rebuildMultiRackCards();
-        }
-        else
-        {
-            processor.loadSampleFile (activeSlotIdx, f, selectedGroupIdx, true, -1);
-            const juce::ScopedLock sl (processor.dataLock);
-            mappingGrid.selectedZoneIdx = (int)processor.getSlot (activeSlotIdx).zones.size() - 1;
-            refreshGroupUI(); refreshSelectedZoneUI();
-            mappingGrid.repaint(); keyboard.repaint();
-        }
+        if (f.hasFileExtension (".nm6i")) processor.loadMonolithInstrument (f);
+        else processor.loadSampleFile (f, selectedGroupIdx, true, -1);
+        const juce::ScopedLock sl (processor.dataLock);
+        mappingGrid.selectedZoneIdx = (int)processor.zones.size() - 1;
+        refreshGroupUI(); refreshSelectedZoneUI(); refreshFXUI(); syncFrontPanelWidgets();
+        mappingGrid.repaint(); keyboard.repaint();
     };
     fileListBox.setRowHeight (22);
     fileListBox.setColour (juce::ListBox::backgroundColourId, juce::Colour (0xff1a1c21));
@@ -1187,7 +1027,7 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     // --- 1. Group Editor ---
     addGroupBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff2f6642));
     addGroupBtn.onClick = [this] {
-        selectedGroupIdx = processor.addGroup (activeSlotIdx);
+        selectedGroupIdx = processor.addGroup();
         groupCards.selectedGroupIdx = selectedGroupIdx;
         mappingGrid.targetDropGroup = selectedGroupIdx;
         mappingGrid.activeGroupFilter = showAllGroupsBtn.getToggleState() ? -1 : selectedGroupIdx;
@@ -1199,7 +1039,7 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
 
     deleteGroupBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff662f2f));
     deleteGroupBtn.onClick = [this] {
-        processor.removeGroup (activeSlotIdx, selectedGroupIdx);
+        processor.removeGroup (selectedGroupIdx);
         selectedGroupIdx = std::max (0, selectedGroupIdx - 1);
         groupCards.selectedGroupIdx = selectedGroupIdx;
         mappingGrid.targetDropGroup = selectedGroupIdx;
@@ -1210,22 +1050,15 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     };
     editRack.addAndMakeVisible (deleteGroupBtn);
 
-    rrToggleBtn.onClick = [this] {
-        auto& s = processor.getSlot (activeSlotIdx);
-        s.rrEnabled.store (!s.rrEnabled.load());
-        refreshGroupUI();
-    };
+    rrToggleBtn.onClick = [this] { processor.rrEnabled.store (!processor.rrEnabled.load()); refreshGroupUI(); };
     editRack.addAndMakeVisible (rrToggleBtn);
 
     rrModeBox.addItem ("RR: Cycle", 1); rrModeBox.addItem ("RR: No-Repeat", 2);
-    rrModeBox.onChange = [this] { processor.getSlot (activeSlotIdx).rrMode.store (rrModeBox.getSelectedId() - 1); };
+    rrModeBox.setSelectedId (processor.rrMode.load() + 1, juce::dontSendNotification);
+    rrModeBox.onChange = [this] { processor.rrMode.store (rrModeBox.getSelectedId() - 1); };
     editRack.addAndMakeVisible (rrModeBox);
 
-    ksMasterBtn.onClick = [this] {
-        auto& s = processor.getSlot (activeSlotIdx);
-        s.keyswitchMasterOn.store (!s.keyswitchMasterOn.load());
-        refreshGroupUI(); keyboard.repaint();
-    };
+    ksMasterBtn.onClick = [this] { processor.keyswitchMasterOn.store (!processor.keyswitchMasterOn.load()); refreshGroupUI(); keyboard.repaint(); };
     editRack.addAndMakeVisible (ksMasterBtn);
 
     showAllGroupsBtn.setToggleState (false, juce::dontSendNotification);
@@ -1251,9 +1084,8 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     grpNameLabel.setColour (juce::Label::outlineColourId, juce::Colour (0xff4a4e57));
     grpNameLabel.onTextChange = [this] {
         const juce::ScopedLock sl (processor.dataLock);
-        auto& s = processor.getSlot (activeSlotIdx);
-        if (selectedGroupIdx >= 0 && selectedGroupIdx < (int)s.groups.size())
-            s.groups[(size_t)selectedGroupIdx].name = grpNameLabel.getText();
+        if (selectedGroupIdx >= 0 && selectedGroupIdx < (int)processor.groups.size())
+            processor.groups[(size_t)selectedGroupIdx].name = grpNameLabel.getText();
         groupCards.repaint();
     };
     editRack.addAndMakeVisible (grpNameLabel);
@@ -1295,13 +1127,13 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     mappingGrid.onZoneChanged = [this] { refreshSelectedZoneUI(); groupCards.repaint(); keyboard.repaint(); };
     editRack.addAndMakeVisible (mappingGrid);
     autoSpreadBtn.onClick = [this] {
-        processor.autoSpreadKeyRanges (activeSlotIdx, showAllGroupsBtn.getToggleState() ? -1 : selectedGroupIdx);
+        processor.autoSpreadKeyRanges (showAllGroupsBtn.getToggleState() ? -1 : selectedGroupIdx);
         mappingGrid.repaint(); refreshSelectedZoneUI(); keyboard.repaint();
     };
     delZoneBtn.onClick = [this] {
         if (mappingGrid.selectedZoneIdx >= 0)
         {
-            processor.removeZone (activeSlotIdx, mappingGrid.selectedZoneIdx);
+            processor.removeZone (mappingGrid.selectedZoneIdx);
             mappingGrid.selectedZoneIdx = -1;
             mappingGrid.repaint(); refreshSelectedZoneUI(); groupCards.repaint(); keyboard.repaint();
         }
@@ -1327,19 +1159,17 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     editRack.addAndMakeVisible (loopToggle);
     loopToggle.onClick = [this] {
         const juce::ScopedLock sl (processor.dataLock);
-        auto& s = processor.getSlot (activeSlotIdx);
         int idx = mappingGrid.selectedZoneIdx;
-        if (idx >= 0 && idx < (int)s.zones.size()) { s.zones[(size_t)idx]->isLooping.store (loopToggle.getToggleState()); waveEditor.repaint(); }
+        if (idx >= 0 && idx < (int)processor.zones.size()) { processor.zones[(size_t)idx]->isLooping.store (loopToggle.getToggleState()); waveEditor.repaint(); }
     };
     autoLoopBtn.onClick = [this] {
         const juce::ScopedLock sl (processor.dataLock);
-        auto& s = processor.getSlot (activeSlotIdx);
         int idx = mappingGrid.selectedZoneIdx;
-        if (idx >= 0 && idx < (int)s.zones.size())
+        if (idx >= 0 && idx < (int)processor.zones.size())
         {
-            auto z = s.zones[(size_t)idx];
+            auto z = processor.zones[(size_t)idx];
             z->isLooping.store (true);
-            NoiseMu6ixSamplerAudioProcessor::autoDetectLoop (z);
+            processor.autoDetectLoop (z);
             loopToggle.setToggleState (true, juce::dontSendNotification);
             crossfadeSlider.setValue (z->crossfadeSamples.load(), juce::dontSendNotification);
             waveEditor.repaint();
@@ -1353,9 +1183,8 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
 
     setupRackHSlider (crossfadeSlider, cfLbl, 64, 15000, 1, 2048, [this] {
         const juce::ScopedLock sl (processor.dataLock);
-        auto& s = processor.getSlot (activeSlotIdx);
         int idx = mappingGrid.selectedZoneIdx;
-        if (idx >= 0 && idx < (int)s.zones.size()) s.zones[(size_t)idx]->crossfadeSamples.store ((int)crossfadeSlider.getValue());
+        if (idx >= 0 && idx < (int)processor.zones.size()) processor.zones[(size_t)idx]->crossfadeSamples.store ((int)crossfadeSlider.getValue());
     });
     setupRackHSlider (zoomSlider, zoomLbl, 1.0, 16.0, 0.1, 1.0, [this] { waveEditor.setZoom ((float)zoomSlider.getValue()); });
 
@@ -1364,6 +1193,7 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     setupFXToggle (fxEqOn); setupFXToggle (fxFltOn); setupFXToggle (fxDrvOn);
     setupFXToggle (fxChoOn); setupFXToggle (fxDlyOn); setupFXToggle (fxRevOn);
     fxFltTypeBox.addItem ("Lowpass", 1); fxFltTypeBox.addItem ("Highpass", 2); fxFltTypeBox.addItem ("Bandpass", 3);
+    fxFltTypeBox.setSelectedId (1, juce::dontSendNotification);
     fxFltTypeBox.onChange = [this] { applyFXToProcessor(); };
     editRack.addAndMakeVisible (fxFltTypeBox);
 
@@ -1388,14 +1218,13 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     // --- 5. Panel Editor ---
     peAddKnobBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff2f6642));
     peAddKnobBtn.onClick = [this] {
-        auto& s = processor.getSlot (activeSlotIdx);
-        for (int i = 0; i < InstrumentSlot::numMacros; ++i)
-            if (!s.macroConfigs[i].visible)
+        for (int i = 0; i < NoiseMu6ixSamplerAudioProcessor::numMacros; ++i)
+            if (!processor.macroConfigs[i].visible)
             {
-                s.macroConfigs[i].visible = true; s.macroConfigs[i].isSlider = false;
-                s.macroConfigs[i].width = 110; s.macroConfigs[i].height = 135;
+                processor.macroConfigs[i].visible = true; processor.macroConfigs[i].isSlider = false;
+                processor.macroConfigs[i].width = 120; processor.macroConfigs[i].height = 140;
                 panelDesignCanvas.selectedMacroIdx = i;
-                refreshPanelEditorInspector(); rebuildMultiRackCards(); panelDesignCanvas.repaint();
+                refreshPanelEditorInspector(); syncFrontPanelWidgets(); panelDesignCanvas.repaint();
                 break;
             }
     };
@@ -1403,14 +1232,13 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
 
     peAddSliderBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff2b4f66));
     peAddSliderBtn.onClick = [this] {
-        auto& s = processor.getSlot (activeSlotIdx);
-        for (int i = 0; i < InstrumentSlot::numMacros; ++i)
-            if (!s.macroConfigs[i].visible)
+        for (int i = 0; i < NoiseMu6ixSamplerAudioProcessor::numMacros; ++i)
+            if (!processor.macroConfigs[i].visible)
             {
-                s.macroConfigs[i].visible = true; s.macroConfigs[i].isSlider = true;
-                s.macroConfigs[i].width = 82; s.macroConfigs[i].height = 180;
+                processor.macroConfigs[i].visible = true; processor.macroConfigs[i].isSlider = true;
+                processor.macroConfigs[i].width = 95; processor.macroConfigs[i].height = 200;
                 panelDesignCanvas.selectedMacroIdx = i;
-                refreshPanelEditorInspector(); rebuildMultiRackCards(); panelDesignCanvas.repaint();
+                refreshPanelEditorInspector(); syncFrontPanelWidgets(); panelDesignCanvas.repaint();
                 break;
             }
     };
@@ -1418,15 +1246,14 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
 
     peDelCtrlBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff662f2f));
     peDelCtrlBtn.onClick = [this] {
-        auto& s = processor.getSlot (activeSlotIdx);
         int idx = panelDesignCanvas.selectedMacroIdx;
-        if (idx >= 0 && idx < InstrumentSlot::numMacros)
+        if (idx >= 0 && idx < NoiseMu6ixSamplerAudioProcessor::numMacros)
         {
-            s.macroConfigs[idx].visible = false;
+            processor.macroConfigs[idx].visible = false;
             panelDesignCanvas.selectedMacroIdx = -1;
-            for (int i = 0; i < InstrumentSlot::numMacros; ++i)
-                if (s.macroConfigs[i].visible) { panelDesignCanvas.selectedMacroIdx = i; break; }
-            refreshPanelEditorInspector(); rebuildMultiRackCards(); panelDesignCanvas.repaint();
+            for (int i = 0; i < NoiseMu6ixSamplerAudioProcessor::numMacros; ++i)
+                if (processor.macroConfigs[i].visible) { panelDesignCanvas.selectedMacroIdx = i; break; }
+            refreshPanelEditorInspector(); syncFrontPanelWidgets(); panelDesignCanvas.repaint();
         }
     };
     editRack.addAndMakeVisible (peDelCtrlBtn);
@@ -1436,12 +1263,11 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     editRack.addAndMakeVisible (peNameEdit);
 
     peStyleBtn.onClick = [this] {
-        auto& s = processor.getSlot (activeSlotIdx);
         int idx = panelDesignCanvas.selectedMacroIdx;
-        if (idx >= 0 && idx < InstrumentSlot::numMacros)
+        if (idx >= 0 && idx < NoiseMu6ixSamplerAudioProcessor::numMacros)
         {
-            s.macroConfigs[idx].isSlider = !s.macroConfigs[idx].isSlider;
-            refreshPanelEditorInspector(); rebuildMultiRackCards(); panelDesignCanvas.repaint();
+            processor.macroConfigs[idx].isSlider = !processor.macroConfigs[idx].isSlider;
+            refreshPanelEditorInspector(); syncFrontPanelWidgets(); panelDesignCanvas.repaint();
         }
     };
     editRack.addAndMakeVisible (peStyleBtn);
@@ -1466,96 +1292,29 @@ NoiseMu6ixSamplerAudioProcessorEditor::NoiseMu6ixSamplerAudioProcessorEditor (No
     editRack.addAndMakeVisible (peMinEdit); editRack.addAndMakeVisible (peMaxEdit);
 
     panelDesignCanvas.onSelectionChanged = [this](int) { refreshPanelEditorInspector(); };
-    panelDesignCanvas.onLayoutChanged    = [this] { rebuildMultiRackCards(); };
+    panelDesignCanvas.onLayoutChanged    = [this] { syncFrontPanelWidgets(); };
     editRack.addAndMakeVisible (panelDesignCanvas);
 
-    // --- 16-Slot Front Panel Multi-Rack ---
-    addNewSlotBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff2f6642));
-    addNewSlotBtn.onClick = [this] {
-        int newIdx = processor.activateNewEmptySlot();
-        if (newIdx >= 0)
-        {
-            setActiveSlot (newIdx);
-            rebuildMultiRackCards();
-        }
-    };
-    rootCanvas.addAndMakeVisible (addNewSlotBtn);
-
-    multiRackViewport.setViewedComponent (&multiRackContent, false);
-    multiRackViewport.setScrollBarsShown (true, false);
-    rootCanvas.addAndMakeVisible (multiRackViewport);
+    // --- Clean Front Panel ---
+    rootCanvas.addAndMakeVisible (frontPanelContainer);
+    for (int i = 0; i < NoiseMu6ixSamplerAudioProcessor::numMacros; ++i)
+    {
+        auto w = std::make_unique<PerformanceMacroWidget> (processor, i);
+        frontPanelContainer.addAndMakeVisible (*w);
+        perfMacros.push_back (std::move (w));
+    }
 
     rootCanvas.addAndMakeVisible (keyboard);
 
     loadSavedLibrariesList();
     updateSidebarVisibility();
-    setActiveSlot (0);
-    rebuildMultiRackCards();
+    refreshGroupUI();
+    refreshFXUI();
+    refreshPanelEditorInspector();
+    syncFrontPanelWidgets();
     updateModeVisibility();
     setUIScale (1.0f);
     startTimerHz (10);
-}
-
-void NoiseMu6ixSamplerAudioProcessorEditor::setActiveSlot (int newSlotIdx)
-{
-    activeSlotIdx = juce::jlimit (0, NoiseMu6ixSamplerAudioProcessor::maxSlots - 1, newSlotIdx);
-    activeSlotBox.setSelectedId (activeSlotIdx + 1, juce::dontSendNotification);
-    groupCards.activeSlotIdx = activeSlotIdx;
-    mappingGrid.activeSlotIdx = activeSlotIdx;
-    panelDesignCanvas.activeSlotIdx = activeSlotIdx;
-    keyboard.activeSlotIdx = activeSlotIdx;
-
-    int ch = processor.getSlot (activeSlotIdx).midiChannel.load();
-    keyboard.setMidiChannel (ch > 0 ? ch : 1);
-
-    selectedGroupIdx = 0;
-    groupCards.selectedGroupIdx = 0;
-    mappingGrid.targetDropGroup = 0;
-    mappingGrid.activeGroupFilter = showAllGroupsBtn.getToggleState() ? -1 : 0;
-    keyboard.activeFilterGroupIdx = mappingGrid.activeGroupFilter;
-    mappingGrid.selectedZoneIdx = -1;
-
-    refreshGroupUI();
-    refreshSelectedZoneUI();
-    refreshFXUI();
-    refreshPanelEditorInspector();
-    mappingGrid.repaint();
-    panelDesignCanvas.repaint();
-    keyboard.repaint();
-}
-
-void NoiseMu6ixSamplerAudioProcessorEditor::rebuildMultiRackCards()
-{
-    multiRackContent.removeAllChildren();
-    rackCards.clear();
-
-    int w = std::max (700, multiRackViewport.getWidth() - multiRackViewport.getScrollBarThickness() - 4);
-    int y = 6;
-    const int cardH = 250; // 32px header + 210px compact Front Panel
-
-    for (int i = 0; i < NoiseMu6ixSamplerAudioProcessor::maxSlots; ++i)
-    {
-        if (!processor.getSlot (i).loaded) continue;
-
-        auto card = std::make_unique<MultiRackSlotCard> (processor, i);
-        card->onEditClicked = [this](int sIdx) {
-            setActiveSlot (sIdx);
-            inEditMode = true;
-            modeToggleBtn.setButtonText ("Multi Rack");
-            updateModeVisibility();
-        };
-        card->onCloseClicked = [this](int sIdx) {
-            processor.removeSlot (sIdx);
-            rebuildMultiRackCards();
-            keyboard.repaint();
-        };
-        card->setBounds (4, y, w - 8, cardH);
-        multiRackContent.addAndMakeVisible (*card);
-        rackCards.push_back (std::move (card));
-        y += cardH + 8;
-    }
-
-    multiRackContent.setSize (w, std::max (y + 10, 300));
 }
 
 void NoiseMu6ixSamplerAudioProcessorEditor::showScaleMenu()
@@ -1737,26 +1496,23 @@ void NoiseMu6ixSamplerAudioProcessorEditor::updateSidebarVisibility()
 
 void NoiseMu6ixSamplerAudioProcessorEditor::refreshGroupUI()
 {
-    const juce::ScopedLock sl (processor.dataLock);
-    auto& s = processor.getSlot (activeSlotIdx);
-
-    bool rrOn = s.rrEnabled.load();
+    bool rrOn = processor.rrEnabled.load();
     rrToggleBtn.setButtonText (rrOn ? "RR: ON (Unlimited)" : "RR: OFF (Layer)");
     rrToggleBtn.setColour (juce::TextButton::buttonColourId, rrOn ? juce::Colour (0xff2a7a4b) : juce::Colour (0xff4a4e57));
     rrModeBox.setEnabled (rrOn);
-    rrModeBox.setSelectedId (s.rrMode.load() + 1, juce::dontSendNotification);
 
-    bool ksOn = s.keyswitchMasterOn.load();
+    bool ksOn = processor.keyswitchMasterOn.load();
     ksMasterBtn.setButtonText (ksOn ? "Keyswitch: ON" : "Keyswitch: OFF");
     ksMasterBtn.setColour (juce::TextButton::buttonColourId, ksOn ? juce::Colour (0xff8a3232) : juce::Colour (0xff4a4e57));
 
-    selectedGroupIdx = juce::jlimit (0, std::max (0, (int)s.groups.size() - 1), selectedGroupIdx);
+    const juce::ScopedLock sl (processor.dataLock);
+    selectedGroupIdx = juce::jlimit (0, std::max (0, (int)processor.groups.size() - 1), selectedGroupIdx);
     groupCards.selectedGroupIdx = selectedGroupIdx;
     groupCards.repaint();
 
-    if (selectedGroupIdx < (int)s.groups.size())
+    if (selectedGroupIdx < (int)processor.groups.size())
     {
-        const auto& g = s.groups[(size_t)selectedGroupIdx];
+        const auto& g = processor.groups[(size_t)selectedGroupIdx];
         grpNameLabel.setText (g.name, juce::dontSendNotification);
         groupSoloBtn.setToggleState (g.solo, juce::dontSendNotification);
         groupMuteBtn.setToggleState (g.mute, juce::dontSendNotification);
@@ -1772,9 +1528,8 @@ void NoiseMu6ixSamplerAudioProcessorEditor::refreshGroupUI()
 void NoiseMu6ixSamplerAudioProcessorEditor::applyGroupInspector()
 {
     const juce::ScopedLock sl (processor.dataLock);
-    auto& s = processor.getSlot (activeSlotIdx);
-    if (selectedGroupIdx < 0 || selectedGroupIdx >= (int)s.groups.size()) return;
-    auto& g = s.groups[(size_t)selectedGroupIdx];
+    if (selectedGroupIdx < 0 || selectedGroupIdx >= (int)processor.groups.size()) return;
+    auto& g = processor.groups[(size_t)selectedGroupIdx];
     g.solo              = groupSoloBtn.getToggleState();
     g.mute              = groupMuteBtn.getToggleState();
     g.volumeDb          = (float)grpVolSlider.getValue();
@@ -1789,15 +1544,14 @@ void NoiseMu6ixSamplerAudioProcessorEditor::applyGroupInspector()
 void NoiseMu6ixSamplerAudioProcessorEditor::refreshSelectedZoneUI()
 {
     const juce::ScopedLock sl (processor.dataLock);
-    auto& s = processor.getSlot (activeSlotIdx);
     int idx = mappingGrid.selectedZoneIdx;
-    if (idx < 0 || idx >= (int)s.zones.size())
+    if (idx < 0 || idx >= (int)processor.zones.size())
     {
         selZoneNameLbl.setText ("Sample: (click a zone on grid)", juce::dontSendNotification);
         waveEditor.setZone (nullptr);
         return;
     }
-    auto z = s.zones[(size_t)idx];
+    auto z = processor.zones[(size_t)idx];
     juce::String rootName = juce::MidiMessage::getMidiNoteName (z->rootNote, true, true, 3);
     selZoneNameLbl.setText ("Sample: " + z->name + " [" + rootName + "]", juce::dontSendNotification);
     zRootSlider.setValue (z->rootNote, juce::dontSendNotification);
@@ -1816,10 +1570,9 @@ void NoiseMu6ixSamplerAudioProcessorEditor::refreshSelectedZoneUI()
 void NoiseMu6ixSamplerAudioProcessorEditor::applyZoneBarToSelected()
 {
     const juce::ScopedLock sl (processor.dataLock);
-    auto& s = processor.getSlot (activeSlotIdx);
     int idx = mappingGrid.selectedZoneIdx;
-    if (idx < 0 || idx >= (int)s.zones.size()) return;
-    auto z = s.zones[(size_t)idx];
+    if (idx < 0 || idx >= (int)processor.zones.size()) return;
+    auto z = processor.zones[(size_t)idx];
     z->rootNote = (int)zRootSlider.getValue(); z->lowKey = (int)zLowKSlider.getValue();
     z->highKey  = (int)zHighKSlider.getValue(); z->lowVel = (int)zLowVSlider.getValue();
     z->highVel  = (int)zHighVSlider.getValue(); z->volumeDb = (float)zVolSlider.getValue();
@@ -1829,7 +1582,7 @@ void NoiseMu6ixSamplerAudioProcessorEditor::applyZoneBarToSelected()
 
 void NoiseMu6ixSamplerAudioProcessorEditor::refreshFXUI()
 {
-    auto& f = processor.getSlot (activeSlotIdx).fx;
+    auto& f = processor.fx;
     fxEqOn.setToggleState (f.eqOn.load(), juce::dontSendNotification);
     fxEqLow.setValue (f.eqLowDb.load(), juce::dontSendNotification);
     fxEqMid.setValue (f.eqMidDb.load(), juce::dontSendNotification);
@@ -1860,7 +1613,7 @@ void NoiseMu6ixSamplerAudioProcessorEditor::refreshFXUI()
 
 void NoiseMu6ixSamplerAudioProcessorEditor::applyFXToProcessor()
 {
-    auto& f = processor.getSlot (activeSlotIdx).fx;
+    auto& f = processor.fx;
     f.eqOn.store (fxEqOn.getToggleState()); f.eqLowDb.store ((float)fxEqLow.getValue());
     f.eqMidDb.store ((float)fxEqMid.getValue()); f.eqHighDb.store ((float)fxEqHigh.getValue());
     f.filterOn.store (fxFltOn.getToggleState()); f.filterType.store (fxFltTypeBox.getSelectedId() - 1);
@@ -1878,14 +1631,13 @@ void NoiseMu6ixSamplerAudioProcessorEditor::applyFXToProcessor()
 
 void NoiseMu6ixSamplerAudioProcessorEditor::refreshPanelEditorInspector()
 {
-    auto& s = processor.getSlot (activeSlotIdx);
     int idx = panelDesignCanvas.selectedMacroIdx;
-    bool valid = (idx >= 0 && idx < InstrumentSlot::numMacros && s.macroConfigs[idx].visible);
+    bool valid = (idx >= 0 && idx < NoiseMu6ixSamplerAudioProcessor::numMacros && processor.macroConfigs[idx].visible);
     peNameEdit.setEnabled (valid); peStyleBtn.setEnabled (valid); peTargetBox.setEnabled (valid);
     peMinEdit.setEnabled (valid); peMaxEdit.setEnabled (valid); peDelCtrlBtn.setEnabled (valid);
     if (valid)
     {
-        const auto& cfg = s.macroConfigs[idx];
+        const auto& cfg = processor.macroConfigs[idx];
         peNameEdit.setText (cfg.name, juce::dontSendNotification);
         peStyleBtn.setButtonText (cfg.isSlider ? "Slider" : "Knob");
         peTargetBox.setSelectedId (cfg.target, juce::dontSendNotification);
@@ -1896,16 +1648,24 @@ void NoiseMu6ixSamplerAudioProcessorEditor::refreshPanelEditorInspector()
 
 void NoiseMu6ixSamplerAudioProcessorEditor::applyPanelEditorInspector()
 {
-    auto& s = processor.getSlot (activeSlotIdx);
     int idx = panelDesignCanvas.selectedMacroIdx;
-    if (idx < 0 || idx >= InstrumentSlot::numMacros) return;
-    auto& cfg = s.macroConfigs[idx];
+    if (idx < 0 || idx >= NoiseMu6ixSamplerAudioProcessor::numMacros) return;
+    auto& cfg = processor.macroConfigs[idx];
     cfg.name   = peNameEdit.getText();
     cfg.target = peTargetBox.getSelectedId();
     cfg.minVal = juce::jlimit (0.0f, 1.0f, peMinEdit.getText().getFloatValue() / 100.0f);
     cfg.maxVal = juce::jlimit (0.0f, 1.0f, peMaxEdit.getText().getFloatValue() / 100.0f);
     panelDesignCanvas.repaint();
-    rebuildMultiRackCards();
+    syncFrontPanelWidgets();
+}
+
+void NoiseMu6ixSamplerAudioProcessorEditor::syncFrontPanelWidgets()
+{
+    for (int i = 0; i < (int)perfMacros.size(); ++i)
+    {
+        perfMacros[(size_t)i]->setVisible (processor.macroConfigs[i].visible);
+        perfMacros[(size_t)i]->syncFromConfig();
+    }
 }
 
 void NoiseMu6ixSamplerAudioProcessorEditor::updateModeVisibility()
@@ -1922,10 +1682,9 @@ void NoiseMu6ixSamplerAudioProcessorEditor::updateModeVisibility()
     togPanelBtn.setColour (juce::TextButton::buttonColourId, showPanelSec ? onCol : offCol);
 
     editViewport.setVisible (inEditMode);
-    addNewSlotBtn.setVisible (!inEditMode);
-    multiRackViewport.setVisible (!inEditMode);
+    frontPanelContainer.setVisible (!inEditMode);
 
-    if (!inEditMode) rebuildMultiRackCards();
+    if (!inEditMode) syncFrontPanelWidgets();
     layoutBaseUI();
     rootCanvas.repaint();
 }
@@ -2045,7 +1804,7 @@ void NoiseMu6ixSamplerAudioProcessorEditor::layoutScrollableRack (int w)
     }
     else editRack.fxHeaderY = -1;
 
-    // 5. Panel Editor (Matches exact 740x210 Multi-Rack Slot Panel!)
+    // 5. Panel Editor
     for (auto* c : std::initializer_list<juce::Component*>{
             &peAddKnobBtn, &peAddSliderBtn, &peDelCtrlBtn, &peNameLbl, &peNameEdit,
             &peStyleBtn, &peTargetBox, &peRangeLbl, &peMinEdit, &peToLbl, &peMaxEdit, &panelDesignCanvas })
@@ -2061,8 +1820,8 @@ void NoiseMu6ixSamplerAudioProcessorEditor::layoutScrollableRack (int w)
         peMinEdit.setBounds (pad + 580, y, 40, 24); peToLbl.setBounds (pad + 622, y, 20, 24);
         peMaxEdit.setBounds (pad + 644, y, 40, 24);
         y += 30;
-        panelDesignCanvas.setBounds (pad, y, innerW, 212);
-        y += 222;
+        panelDesignCanvas.setBounds (pad, y, innerW, 430);
+        y += 438;
     }
     else editRack.panelHeaderY = -1;
 
@@ -2077,14 +1836,13 @@ void NoiseMu6ixSamplerAudioProcessorEditor::layoutBaseUI()
     // Header (44px)
     auto header = area.removeFromTop (44).reduced (6, 5);
     logoBtn.setBounds (header.removeFromLeft (188));
-    header.removeFromLeft (10);
-    modeToggleBtn.setBounds (header.removeFromLeft (90).reduced (0, 2)); header.removeFromLeft (6);
-    activeSlotBox.setBounds (header.removeFromLeft (80).reduced (0, 2)); header.removeFromLeft (6);
-    saveInstBtn.setBounds   (header.removeFromLeft (84).reduced (0, 2)); header.removeFromLeft (5);
-    loadInstBtn.setBounds   (header.removeFromLeft (84).reduced (0, 2));
+    header.removeFromLeft (14);
+    modeToggleBtn.setBounds (header.removeFromLeft (100).reduced (0, 2)); header.removeFromLeft (6);
+    saveInstBtn.setBounds   (header.removeFromLeft (90).reduced (0, 2));  header.removeFromLeft (6);
+    loadInstBtn.setBounds   (header.removeFromLeft (90).reduced (0, 2));
 
-    voicesLabel.setBounds  (header.removeFromRight (76));
-    versionLabel.setBounds (header.removeFromRight (52));
+    voicesLabel.setBounds  (header.removeFromRight (78));
+    versionLabel.setBounds (header.removeFromRight (55));
 
     // Left Sidebar (196px)
     auto left = area.removeFromLeft (196).reduced (6, 6);
@@ -2094,7 +1852,7 @@ void NoiseMu6ixSamplerAudioProcessorEditor::layoutBaseUI()
     sideFilesTabBtn.setBounds (sideTabs);
     left.removeFromTop (6);
 
-    // Libraries view
+    // Libraries view (Banner Photo + Expandable Instruments)
     auto libArea = left;
     auto libBtns = libArea.removeFromTop (24);
     addLibraryBtn.setBounds (libBtns.removeFromLeft (72)); libBtns.removeFromLeft (3);
@@ -2135,10 +1893,7 @@ void NoiseMu6ixSamplerAudioProcessorEditor::layoutBaseUI()
     }
     else
     {
-        auto topBar = rack.removeFromTop (26);
-        addNewSlotBtn.setBounds (topBar.removeFromLeft (185));
-        rack.removeFromTop (6);
-        multiRackViewport.setBounds (rack);
-        rebuildMultiRackCards();
+        frontPanelContainer.setBounds (rack);
+        syncFrontPanelWidgets();
     }
 }
