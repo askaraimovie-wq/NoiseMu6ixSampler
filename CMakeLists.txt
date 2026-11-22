@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(NoiseMu6ixSampler VERSION 1.0.5)
+project(NoiseMu6ixSampler VERSION 1.0.6)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,7 +24,7 @@ juce_add_plugin(NoiseMu6ixSampler
     PLUGIN_MANUFACTURER_CODE Nm6s
     PLUGIN_CODE Nm6p
     FORMATS VST3 Standalone
-    PRODUCT_NAME "NoiseMu6ixSampler_v1.0.5"
+    PRODUCT_NAME "NoiseMu6ixSampler_v1.0.6"
 )
 
 juce_generate_juce_header(NoiseMu6ixSampler)

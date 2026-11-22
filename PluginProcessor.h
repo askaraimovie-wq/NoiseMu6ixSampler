@@ -14,10 +14,9 @@ struct SampleGroup
     bool solo = false;
     bool mute = false;
 
-    // Keyswitch support per group
     bool keyswitchEnabled = false;
-    int keyswitchNote = 24;        // Default C1
-    int keyswitchColorIdx = 0;     // 0=Red, 1=Green, 2=Yellow, 3=Purple, 4=Orange, 5=Cyan
+    int keyswitchNote = 24;
+    int keyswitchColorIdx = 0;
 };
 
 struct SampleZone
@@ -73,6 +72,16 @@ struct MacroConfig
     bool isSlider = false;
     bool visible = true;
     int target = (int)MacroTarget::None;
+
+    // Custom modulation range (0.0 to 1.0, e.g. 0.20 to 0.80 = 20% to 80%)
+    float minVal = 0.0f;
+    float maxVal = 1.0f;
+
+    // Free-form position & size on Front Panel canvas
+    int posX = 20;
+    int posY = 20;
+    int width = 120;
+    int height = 160;
 };
 
 struct FXSettings
@@ -167,25 +176,20 @@ public:
 
     static int findNearestZeroCrossing (const juce::AudioBuffer<float>& buf, int targetSample);
     void autoDetectLoop (std::shared_ptr<SampleZone> zone);
-
     static juce::Colour getKeyswitchPaletteColour (int idx);
 
     juce::CriticalSection dataLock;
     std::vector<SampleGroup> groups;
     std::vector<std::shared_ptr<SampleZone>> zones;
 
-    // Unlimited Round Robin ON/OFF + Mode (0 = Cycle, 1 = No-Repeat Random)
     std::atomic<bool> rrEnabled { true };
     std::atomic<int> rrMode { 0 };
-
-    // Keyswitch Master Switch & Active Keyswitch Note
     std::atomic<bool> keyswitchMasterOn { false };
     std::atomic<int> activeKeyswitchNote { 24 };
-
     std::atomic<int> activeVoicesCount { 0 };
     FXSettings fx;
 
-    static constexpr int numMacros = 8;
+    static constexpr int numMacros = 12;
     MacroConfig macroConfigs[numMacros];
 
     juce::AudioProcessorValueTreeState apvts;
@@ -194,7 +198,6 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     int parseNoteFromFilename (const juce::String& name);
-    int parseRRFromFilename (const juce::String& name);
     float getMacroValueForTarget (MacroTarget target, float defaultValue) const;
     std::unique_ptr<juce::XmlElement> buildStateXml (bool forMonolith);
     void applyStateXml (const juce::XmlElement& root, juce::ZipFile* monolithZip);

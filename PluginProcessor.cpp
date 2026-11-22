@@ -30,20 +30,24 @@ NoiseMu6ixSamplerAudioProcessor::NoiseMu6ixSamplerAudioProcessor()
     g1.keyswitchColorIdx = 0;
     groups.push_back (g1);
 
-    macroConfigs[0] = { "Dynamics",   true,  true,  (int)MacroTarget::Dynamics };
-    macroConfigs[1] = { "Expression", true,  true,  (int)MacroTarget::Expression };
-    macroConfigs[2] = { "Cutoff",     false, true,  (int)MacroTarget::FilterCutoff };
-    macroConfigs[3] = { "Reverb",     false, true,  (int)MacroTarget::ReverbMix };
-    macroConfigs[4] = { "Delay",      false, true,  (int)MacroTarget::DelayMix };
-    macroConfigs[5] = { "Release",    false, true,  (int)MacroTarget::Release };
-    macroConfigs[6] = { "Chorus",     false, false, (int)MacroTarget::ChorusMix };
-    macroConfigs[7] = { "Drive",      false, false, (int)MacroTarget::Drive };
+    macroConfigs[0]  = { "Dynamics",   true,  true,  (int)MacroTarget::Dynamics,     0.0f, 1.0f,  25,  30, 100, 210 };
+    macroConfigs[1]  = { "Expression", true,  true,  (int)MacroTarget::Expression,   0.0f, 1.0f, 140,  30, 100, 210 };
+    macroConfigs[2]  = { "Cutoff",     false, true,  (int)MacroTarget::FilterCutoff, 0.0f, 1.0f, 265,  35, 130, 145 };
+    macroConfigs[3]  = { "Reverb",     false, true,  (int)MacroTarget::ReverbMix,    0.0f, 1.0f, 415,  35, 130, 145 };
+    macroConfigs[4]  = { "Release",    false, true,  (int)MacroTarget::Release,      0.0f, 1.0f, 565,  35, 130, 145 };
+    macroConfigs[5]  = { "Delay",      false, false, (int)MacroTarget::DelayMix,     0.0f, 1.0f, 265, 200, 130, 145 };
+    macroConfigs[6]  = { "Chorus",     false, false, (int)MacroTarget::ChorusMix,    0.0f, 1.0f, 415, 200, 130, 145 };
+    macroConfigs[7]  = { "Drive",      false, false, (int)MacroTarget::Drive,        0.0f, 1.0f, 565, 200, 130, 145 };
+    macroConfigs[8]  = { "Attack",     false, false, (int)MacroTarget::Attack,       0.0f, 1.0f,  30, 260, 120, 135 };
+    macroConfigs[9]  = { "Decay",      false, false, (int)MacroTarget::Decay,        0.0f, 1.0f, 165, 260, 120, 135 };
+    macroConfigs[10] = { "Pitch",      false, false, (int)MacroTarget::Pitch,        0.0f, 1.0f, 300, 260, 120, 135 };
+    macroConfigs[11] = { "Pan",        false, false, (int)MacroTarget::Pan,          0.0f, 1.0f, 435, 260, 120, 135 };
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout NoiseMu6ixSamplerAudioProcessor::createParameterLayout()
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-    float defaults[numMacros] = { 0.85f, 0.85f, 1.0f, 0.15f, 0.0f, 0.25f, 0.0f, 0.0f };
+    float defaults[numMacros] = { 0.85f, 0.85f, 1.0f, 0.15f, 0.25f, 0.0f, 0.0f, 0.0f, 0.02f, 0.25f, 0.5f, 0.5f };
 
     for (int i = 0; i < numMacros; ++i)
     {
@@ -104,7 +108,12 @@ float NoiseMu6ixSamplerAudioProcessor::getMacroValueForTarget (MacroTarget targe
         if (macroConfigs[i].visible && macroConfigs[i].target == (int)target)
         {
             if (auto* p = apvts.getRawParameterValue ("macro" + juce::String (i)))
-                return p->load();
+            {
+                float raw = p->load();
+                float mn = juce::jlimit (0.0f, 1.0f, macroConfigs[i].minVal);
+                float mx = juce::jlimit (0.0f, 1.0f, macroConfigs[i].maxVal);
+                return juce::jlimit (0.0f, 1.0f, mn + raw * (mx - mn));
+            }
         }
     }
     return defaultValue;
@@ -195,19 +204,6 @@ int NoiseMu6ixSamplerAudioProcessor::parseNoteFromFilename (const juce::String& 
         }
     }
     return 60;
-}
-
-int NoiseMu6ixSamplerAudioProcessor::parseRRFromFilename (const juce::String& name)
-{
-    auto upper = name.toUpperCase();
-    int idx = upper.indexOf ("RR");
-    if (idx >= 0 && idx + 2 < upper.length())
-    {
-        auto numStr = upper.substring (idx + 2, idx + 5).retainCharacters ("0123456789");
-        int rr = numStr.getIntValue();
-        if (rr >= 1 && rr <= 999) return rr;
-    }
-    return -1;
 }
 
 void NoiseMu6ixSamplerAudioProcessor::loadSampleFile (const juce::File& file, int targetGroupIdx, bool autoMapName, int dropNote)
@@ -384,7 +380,6 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
                 {
                     groupSnapshot = groups;
 
-                    // Check if pressed note is a Keyswitch when Keyswitch Master is ON
                     if (keyswitchMasterOn.load())
                     {
                         for (const auto& g : groups)
@@ -411,10 +406,7 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
                             const auto& g = groups[(size_t)z->groupIndex];
                             if (g.mute) continue;
                             if (anySolo && !g.solo) continue;
-
-                            // Keyswitch filtering: if KS is enabled on this group, only play if it matches active KS!
-                            if (ksMaster && g.keyswitchEnabled && g.keyswitchNote != curKS)
-                                continue;
+                            if (ksMaster && g.keyswitchEnabled && g.keyswitchNote != curKS) continue;
 
                             if (note >= z->lowKey && note <= z->highKey &&
                                 vel  >= z->lowVel && vel  <= z->highVel &&
@@ -554,7 +546,7 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
         }
     }
 
-    // 2. Drive / Saturation
+    // 2. Drive
     if (fx.driveOn.load() && drvVal > 0.001f)
     {
         float gain = 1.0f + drvVal * 8.0f;
@@ -638,7 +630,7 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
 
 std::unique_ptr<juce::XmlElement> NoiseMu6ixSamplerAudioProcessor::buildStateXml (bool forMonolith)
 {
-    auto root = std::make_unique<juce::XmlElement> ("NoiseMu6ixStateV105");
+    auto root = std::make_unique<juce::XmlElement> ("NoiseMu6ixStateV106");
     root->setAttribute ("rrEnabled", rrEnabled.load());
     root->setAttribute ("rrMode", rrMode.load());
     root->setAttribute ("ksMaster", keyswitchMasterOn.load());
@@ -683,6 +675,12 @@ std::unique_ptr<juce::XmlElement> NoiseMu6ixSamplerAudioProcessor::buildStateXml
         m->setAttribute ("isSlider", macroConfigs[i].isSlider);
         m->setAttribute ("visible", macroConfigs[i].visible);
         m->setAttribute ("target", macroConfigs[i].target);
+        m->setAttribute ("minVal", macroConfigs[i].minVal);
+        m->setAttribute ("maxVal", macroConfigs[i].maxVal);
+        m->setAttribute ("x", macroConfigs[i].posX);
+        m->setAttribute ("y", macroConfigs[i].posY);
+        m->setAttribute ("w", macroConfigs[i].width);
+        m->setAttribute ("h", macroConfigs[i].height);
     }
 
     const juce::ScopedLock sl (dataLock);
@@ -781,6 +779,12 @@ void NoiseMu6ixSamplerAudioProcessor::applyStateXml (const juce::XmlElement& roo
             macroConfigs[i].isSlider = m->getBoolAttribute ("isSlider", false);
             macroConfigs[i].visible  = m->getBoolAttribute ("visible", true);
             macroConfigs[i].target   = m->getIntAttribute ("target", 1);
+            macroConfigs[i].minVal   = (float)m->getDoubleAttribute ("minVal", 0.0);
+            macroConfigs[i].maxVal   = (float)m->getDoubleAttribute ("maxVal", 1.0);
+            macroConfigs[i].posX     = m->getIntAttribute ("x", macroConfigs[i].posX);
+            macroConfigs[i].posY     = m->getIntAttribute ("y", macroConfigs[i].posY);
+            macroConfigs[i].width    = m->getIntAttribute ("w", macroConfigs[i].width);
+            macroConfigs[i].height   = m->getIntAttribute ("h", macroConfigs[i].height);
             ++i;
         }
     }
@@ -930,7 +934,8 @@ bool NoiseMu6ixSamplerAudioProcessor::loadMonolithInstrument (const juce::File& 
 
     auto xml = juce::parseXML (xmlStream->readEntireStreamAsString());
     if (!xml) return false;
-    if (!xml->hasTagName ("NoiseMu6ixStateV105") && !xml->hasTagName ("NoiseMu6ixStateV104") && !xml->hasTagName ("NoiseMu6ixStateV3"))
+    auto tag = xml->getTagName();
+    if (tag != "NoiseMu6ixStateV106" && tag != "NoiseMu6ixStateV105" && tag != "NoiseMu6ixStateV104" && tag != "NoiseMu6ixStateV3")
         return false;
 
     applyStateXml (*xml, &zip);
@@ -946,7 +951,7 @@ void NoiseMu6ixSamplerAudioProcessor::getStateInformation (juce::MemoryBlock& de
 void NoiseMu6ixSamplerAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     auto root = getXmlFromBinary (data, sizeInBytes);
-    if (root && (root->hasTagName ("NoiseMu6ixStateV105") || root->hasTagName ("NoiseMu6ixStateV104")))
+    if (root && (root->hasTagName ("NoiseMu6ixStateV106") || root->hasTagName ("NoiseMu6ixStateV105") || root->hasTagName ("NoiseMu6ixStateV104")))
         applyStateXml (*root, nullptr);
 }
 
