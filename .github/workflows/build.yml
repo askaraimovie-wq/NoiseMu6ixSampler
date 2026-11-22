@@ -1,4 +1,4 @@
-name: Build Windows VST3
+name: Build Windows VST3 and Standalone
 
 on:
   push:
@@ -15,12 +15,11 @@ jobs:
       - name: Configure CMake
         run: cmake -B build -A x64
 
-      - name: Build VST3 Release
-        run: cmake --build build --config Release --target NoiseMu6ixSampler_VST3 -j
+      - name: Build VST3 and Standalone
+        run: cmake --build build --config Release -j
 
-      - name: Upload VST3 Plugin
+      - name: Upload Plugin Files
         uses: actions/upload-artifact@v4
         with:
-          name: NoiseMu6ixSampler-Windows-VST3
-          path: build/NoiseMu6ixSampler_artefacts/Release/VST3/
-          
+          name: NoiseMu6ixSampler-VST3-and-Standalone
+          path: build/NoiseMu6ixSampler_artefacts/Release/
