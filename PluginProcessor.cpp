@@ -9,18 +9,25 @@ NoiseMu6ixSamplerAudioProcessor::NoiseMu6ixSamplerAudioProcessor()
 {
     formatManager.registerBasicFormats();
 
-    macroConfigs[0] = { "Dynamics",   true,  (int)MacroTarget::Dynamics };
-    macroConfigs[1] = { "Expression", true,  (int)MacroTarget::Expression };
-    macroConfigs[2] = { "Cutoff",     false, (int)MacroTarget::FilterCutoff };
-    macroConfigs[3] = { "Reverb",     false, (int)MacroTarget::ReverbMix };
-    macroConfigs[4] = { "Attack",     false, (int)MacroTarget::Attack };
-    macroConfigs[5] = { "Release",    false, (int)MacroTarget::Release };
+    SampleGroup g1;
+    g1.name = "Group 1 (RR1)";
+    g1.rrGroup = 1;
+    groups.push_back (g1);
+
+    macroConfigs[0] = { "Dynamics",   true,  true,  (int)MacroTarget::Dynamics };
+    macroConfigs[1] = { "Expression", true,  true,  (int)MacroTarget::Expression };
+    macroConfigs[2] = { "Cutoff",     false, true,  (int)MacroTarget::FilterCutoff };
+    macroConfigs[3] = { "Reverb",     false, true,  (int)MacroTarget::ReverbMix };
+    macroConfigs[4] = { "Attack",     false, true,  (int)MacroTarget::Attack };
+    macroConfigs[5] = { "Release",    false, true,  (int)MacroTarget::Release };
+    macroConfigs[6] = { "Pitch",      false, false, (int)MacroTarget::Pitch };
+    macroConfigs[7] = { "Pan",        false, false, (int)MacroTarget::Pan };
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout NoiseMu6ixSamplerAudioProcessor::createParameterLayout()
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-    float defaults[numMacros] = { 0.85f, 0.85f, 1.0f, 0.15f, 0.02f, 0.25f };
+    float defaults[numMacros] = { 0.85f, 0.85f, 1.0f, 0.15f, 0.02f, 0.25f, 0.5f, 0.5f };
 
     for (int i = 0; i < numMacros; ++i)
     {
@@ -64,13 +71,41 @@ float NoiseMu6ixSamplerAudioProcessor::getMacroValueForTarget (MacroTarget targe
 {
     for (int i = 0; i < numMacros; ++i)
     {
-        if (macroConfigs[i].target == (int)target)
+        if (macroConfigs[i].visible && macroConfigs[i].target == (int)target)
         {
             if (auto* p = apvts.getRawParameterValue ("macro" + juce::String (i)))
                 return p->load();
         }
     }
     return defaultValue;
+}
+
+int NoiseMu6ixSamplerAudioProcessor::addGroup (const juce::String& name)
+{
+    const juce::ScopedLock sl (dataLock);
+    SampleGroup g;
+    int idx = (int)groups.size() + 1;
+    g.name = name.isEmpty() ? ("Group " + juce::String (idx)) : name;
+    g.rrGroup = juce::jlimit (1, 10, ((idx - 1) % 10) + 1);
+    groups.push_back (g);
+    return (int)groups.size() - 1;
+}
+
+void NoiseMu6ixSamplerAudioProcessor::removeGroup (int groupIdx)
+{
+    const juce::ScopedLock sl (dataLock);
+    if (groups.size() <= 1 || groupIdx < 0 || groupIdx >= (int)groups.size())
+        return;
+
+    zones.erase (std::remove_if (zones.begin(), zones.end(),
+                 [groupIdx](const std::shared_ptr<SampleZone>& z) { return z->groupIndex == groupIdx; }),
+                 zones.end());
+
+    for (auto& z : zones)
+        if (z->groupIndex > groupIdx)
+            z->groupIndex -= 1;
+
+    groups.erase (groups.begin() + groupIdx);
 }
 
 int NoiseMu6ixSamplerAudioProcessor::findNearestZeroCrossing (const juce::AudioBuffer<float>& buf, int targetSample)
@@ -98,13 +133,17 @@ int NoiseMu6ixSamplerAudioProcessor::findNearestZeroCrossing (const juce::AudioB
 void NoiseMu6ixSamplerAudioProcessor::autoDetectLoop (std::shared_ptr<SampleZone> zone)
 {
     if (!zone || zone->buffer.getNumSamples() < 512) return;
-    int len = zone->buffer.getNumSamples();
-    int start = findNearestZeroCrossing (zone->buffer, (int)(len * 0.30));
-    int end   = findNearestZeroCrossing (zone->buffer, (int)(len * 0.80));
+    int sStart = zone->sampleStart.load();
+    int sEnd   = zone->sampleEnd.load();
+    if (sEnd <= sStart + 256) { sStart = 0; sEnd = zone->buffer.getNumSamples() - 1; }
+
+    int len = sEnd - sStart;
+    int start = findNearestZeroCrossing (zone->buffer, sStart + (int)(len * 0.30));
+    int end   = findNearestZeroCrossing (zone->buffer, sStart + (int)(len * 0.80));
     if (end <= start + 256)
     {
-        start = 0;
-        end = len - 1;
+        start = sStart;
+        end = sEnd;
     }
     zone->loopStart.store (start);
     zone->loopEnd.store (end);
@@ -141,10 +180,10 @@ int NoiseMu6ixSamplerAudioProcessor::parseRRFromFilename (const juce::String& na
         int rr = numStr.getIntValue();
         if (rr >= 1 && rr <= 10) return rr;
     }
-    return 1;
+    return -1;
 }
 
-void NoiseMu6ixSamplerAudioProcessor::loadSampleFile (const juce::File& file, bool autoMapName)
+void NoiseMu6ixSamplerAudioProcessor::loadSampleFile (const juce::File& file, int targetGroupIdx, bool autoMapName, int dropNote)
 {
     if (!file.existsAsFile()) return;
     std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
@@ -154,38 +193,66 @@ void NoiseMu6ixSamplerAudioProcessor::loadSampleFile (const juce::File& file, bo
     zone->name = file.getFileNameWithoutExtension();
     zone->file = file;
     zone->sampleRate = reader->sampleRate;
-    zone->buffer.setSize ((int)reader->numChannels, (int)reader->lengthInSamples);
-    reader->read (&zone->buffer, 0, (int)reader->lengthInSamples, 0, true, true);
+    int totalLen = (int)reader->lengthInSamples;
+    zone->buffer.setSize ((int)reader->numChannels, totalLen);
+    reader->read (&zone->buffer, 0, totalLen, 0, true, true);
 
-    if (autoMapName)
+    zone->sampleStart.store (0);
+    zone->sampleEnd.store (std::max (0, totalLen - 1));
+
+    const juce::ScopedLock sl (dataLock);
+    int gIdx = juce::jlimit (0, std::max (0, (int)groups.size() - 1), targetGroupIdx);
+
+    if (dropNote >= 0)
     {
-        zone->rootNote = parseNoteFromFilename (zone->name);
-        zone->rrGroup  = parseRRFromFilename (zone->name);
+        zone->rootNote = juce::jlimit (0, 127, dropNote);
+        zone->lowKey   = juce::jlimit (0, 127, dropNote - 2);
+        zone->highKey  = juce::jlimit (0, 127, dropNote + 2);
+    }
+    else if (autoMapName)
+    {
+        int parsedNote = parseNoteFromFilename (zone->name);
+        zone->rootNote = parsedNote;
+        zone->lowKey   = juce::jlimit (0, 127, parsedNote - 6);
+        zone->highKey  = juce::jlimit (0, 127, parsedNote + 6);
+
+        int parsedRR = parseRRFromFilename (zone->name);
+        if (parsedRR >= 1)
+        {
+            while ((int)groups.size() < parsedRR)
+            {
+                SampleGroup ng;
+                ng.name = "Group " + juce::String ((int)groups.size() + 1) + " (RR" + juce::String ((int)groups.size() + 1) + ")";
+                ng.rrGroup = (int)groups.size() + 1;
+                groups.push_back (ng);
+            }
+            gIdx = parsedRR - 1;
+        }
+
         auto lower = zone->name.toLowerCase();
         if (lower.contains ("long") || lower.contains ("sus"))
             zone->isLooping.store (true);
     }
 
+    zone->groupIndex = gIdx;
     autoDetectLoop (zone);
-
-    const juce::ScopedLock sl (zoneLock);
     zones.push_back (zone);
 }
 
-void NoiseMu6ixSamplerAudioProcessor::loadSampleFolder (const juce::File& folder)
+void NoiseMu6ixSamplerAudioProcessor::loadSampleFolder (const juce::File& folder, int targetGroupIdx)
 {
     if (!folder.isDirectory()) return;
     auto files = folder.findChildFiles (juce::File::findFiles, false, "*.wav;*.aif;*.aiff;*.flac;*.ogg");
     files.sort();
     for (auto& f : files)
-        loadSampleFile (f, true);
+        loadSampleFile (f, targetGroupIdx, true, -1);
 
     autoSpreadKeyRanges();
 }
 
 void NoiseMu6ixSamplerAudioProcessor::autoSpreadKeyRanges()
 {
-    const juce::ScopedLock sl (zoneLock);
+    const juce::ScopedLock sl (dataLock);
     if (zones.empty()) return;
 
     std::vector<int> uniqueRoots;
@@ -207,14 +274,14 @@ void NoiseMu6ixSamplerAudioProcessor::autoSpreadKeyRanges()
 
 void NoiseMu6ixSamplerAudioProcessor::removeZone (int index)
 {
-    const juce::ScopedLock sl (zoneLock);
+    const juce::ScopedLock sl (dataLock);
     if (index >= 0 && index < (int)zones.size())
         zones.erase (zones.begin() + index);
 }
 
 void NoiseMu6ixSamplerAudioProcessor::clearAllZones()
 {
-    const juce::ScopedLock sl (zoneLock);
+    const juce::ScopedLock sl (dataLock);
     zones.clear();
 }
 
@@ -224,7 +291,6 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
     buffer.clear();
     keyboardState.processNextMidiBuffer (midiMessages, 0, buffer.getNumSamples(), true);
 
-    // Read Macro Parameters
     float dynVal    = getMacroValueForTarget (MacroTarget::Dynamics, 0.85f);
     float exprVal   = getMacroValueForTarget (MacroTarget::Expression, 0.85f);
     float cutNorm   = getMacroValueForTarget (MacroTarget::FilterCutoff, 1.0f);
@@ -247,10 +313,9 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
     float masterGain = dynVal * exprVal * 1.4f;
     float pitchSemitones = (pitchNorm - 0.5f) * 24.0f;
     double globalPitchMult = std::pow (2.0, pitchSemitones / 12.0);
-    float panL = std::cos (panNorm * juce::MathConstants<float>::halfPi);
-    float panR = std::sin (panNorm * juce::MathConstants<float>::halfPi);
+    float masterPanL = std::cos (panNorm * juce::MathConstants<float>::halfPi);
+    float masterPanR = std::sin (panNorm * juce::MathConstants<float>::halfPi);
 
-    // Handle MIDI Events
     for (const auto metadata : midiMessages)
     {
         auto msg = metadata.getMessage();
@@ -260,12 +325,22 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
             int vel  = msg.getVelocity();
 
             std::vector<std::shared_ptr<SampleZone>> matches;
+            std::vector<SampleGroup> groupSnapshot;
             {
-                const juce::ScopedTryLock sl (zoneLock);
+                const juce::ScopedTryLock sl (dataLock);
                 if (sl.isLocked())
                 {
+                    groupSnapshot = groups;
+                    bool anySolo = false;
+                    for (auto& g : groups) if (g.solo) { anySolo = true; break; }
+
                     for (auto& z : zones)
                     {
+                        if (z->groupIndex < 0 || z->groupIndex >= (int)groups.size()) continue;
+                        const auto& g = groups[(size_t)z->groupIndex];
+                        if (g.mute) continue;
+                        if (anySolo && !g.solo) continue;
+
                         if (note >= z->lowKey && note <= z->highKey &&
                             vel  >= z->lowVel && vel  <= z->highVel &&
                             z->buffer.getNumSamples() > 0)
@@ -278,9 +353,10 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
 
             if (!matches.empty())
             {
-                // Sort matches by RR Group so Cycle mode is predictable
-                std::sort (matches.begin(), matches.end(), [](const auto& a, const auto& b) {
-                    return a->rrGroup < b->rrGroup;
+                std::sort (matches.begin(), matches.end(), [&](const auto& a, const auto& b) {
+                    int rrA = (a->groupIndex < (int)groupSnapshot.size()) ? groupSnapshot[(size_t)a->groupIndex].rrGroup : 1;
+                    int rrB = (b->groupIndex < (int)groupSnapshot.size()) ? groupSnapshot[(size_t)b->groupIndex].rrGroup : 1;
+                    return rrA < rrB;
                 });
 
                 int chosenIdx = 0;
@@ -288,17 +364,17 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
                 if (count > 1)
                 {
                     int mode = rrMode.load();
-                    if (mode == 0) // Cycle
+                    if (mode == 0)
                     {
                         chosenIdx = (lastRRIndexPerNote[note] + 1) % count;
                     }
-                    else if (mode == 1) // No-Repeat Random
+                    else if (mode == 1)
                     {
                         std::uniform_int_distribution<int> dist (0, count - 2);
                         int r = dist (rng);
                         chosenIdx = (r >= lastRRIndexPerNote[note]) ? r + 1 : r;
                     }
-                    else // True Random
+                    else
                     {
                         std::uniform_int_distribution<int> dist (0, count - 1);
                         chosenIdx = dist (rng);
@@ -306,20 +382,28 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
                 }
                 lastRRIndexPerNote[note] = chosenIdx;
                 auto selectedZone = matches[(size_t)chosenIdx];
+                SampleGroup grp;
+                if (selectedZone->groupIndex >= 0 && selectedZone->groupIndex < (int)groupSnapshot.size())
+                    grp = groupSnapshot[(size_t)selectedZone->groupIndex];
 
-                // Find free voice or steal oldest
                 NM6Voice* targetVoice = &voices[0];
                 for (auto& v : voices)
-                {
                     if (!v.active) { targetVoice = &v; break; }
-                }
+
+                float totalDb = selectedZone->volumeDb + grp.volumeDb;
+                float totalPan = juce::jlimit (-1.0f, 1.0f, selectedZone->pan + grp.pan);
+                float panAngle = (totalPan * 0.5f + 0.5f) * juce::MathConstants<float>::halfPi;
+                float totalTune = selectedZone->tuneSemi + grp.tuneSemi;
 
                 targetVoice->active = true;
                 targetVoice->midiNote = note;
                 targetVoice->velocity = vel / 127.0f;
                 targetVoice->zone = selectedZone;
-                targetVoice->playPos = 0.0;
-                targetVoice->basePitchRatio = std::pow (2.0, (note - selectedZone->rootNote) / 12.0)
+                targetVoice->playPos = (double)selectedZone->sampleStart.load();
+                targetVoice->voiceGain = juce::Decibels::decibelsToGain (totalDb);
+                targetVoice->voicePanL = std::cos (panAngle);
+                targetVoice->voicePanR = std::sin (panAngle);
+                targetVoice->basePitchRatio = std::pow (2.0, ((note - selectedZone->rootNote) + totalTune) / 12.0)
                                               * (selectedZone->sampleRate / currentSampleRate);
                 targetVoice->adsr.setSampleRate (currentSampleRate);
                 targetVoice->adsr.setParameters (adsrParams);
@@ -354,17 +438,19 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
         return data[i0] + frac * (data[i0 + 1] - data[i0]);
     };
 
-    // Render Voices with Zero-Click Equal-Power Crossfade Looping
+    int activeCnt = 0;
     for (auto& v : voices)
     {
         if (!v.active || !v.zone) continue;
+        ++activeCnt;
         v.adsr.setParameters (adsrParams);
 
         auto& buf = v.zone->buffer;
         int totalLen = buf.getNumSamples();
+        int sEnd     = juce::jlimit (1, std::max (1, totalLen - 1), v.zone->sampleEnd.load());
         bool looping = v.zone->isLooping.load();
-        int lStart   = juce::jlimit (0, std::max (0, totalLen - 2), v.zone->loopStart.load());
-        int lEnd     = juce::jlimit (lStart + 1, std::max (1, totalLen - 1), v.zone->loopEnd.load());
+        int lStart   = juce::jlimit (0, std::max (0, sEnd - 2), v.zone->loopStart.load());
+        int lEnd     = juce::jlimit (lStart + 1, sEnd, v.zone->loopEnd.load());
         int loopLen  = lEnd - lStart;
         int cf       = looping ? juce::jlimit (0, std::max (0, loopLen / 3), v.zone->crossfadeSamples.load()) : 0;
 
@@ -378,14 +464,13 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
                 break;
             }
 
-            if (!looping && v.playPos >= totalLen - 1)
+            if (!looping && v.playPos >= sEnd)
             {
                 v.active = false;
                 break;
             }
 
             float sampleL = 0.0f, sampleR = 0.0f;
-
             if (looping && cf > 4 && v.playPos >= (lEnd - cf) && v.playPos < lEnd)
             {
                 double intoFade = v.playPos - (lEnd - cf);
@@ -403,21 +488,19 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
                 sampleR = readInterpolated (buf, 1, v.playPos);
             }
 
-            float env = v.adsr.getNextSample() * v.velocity * masterGain;
-            outL[s] += sampleL * env * panL;
-            outR[s] += sampleR * env * panR;
+            float env = v.adsr.getNextSample() * v.velocity * v.voiceGain * masterGain;
+            outL[s] += sampleL * env * v.voicePanL * masterPanL;
+            outR[s] += sampleR * env * v.voicePanR * masterPanR;
 
             v.playPos += step;
 
             if (looping && loopLen > 16 && v.playPos >= lEnd)
-            {
                 v.playPos = (double)(lStart + cf) + (v.playPos - (double)lEnd);
-            }
         }
     }
+    activeVoicesCount.store (activeCnt);
 
-    // Master Filter
-    float cutoffHz = 80.0f * std::pow (250.0f, cutNorm); // 80 Hz to 20 kHz
+    float cutoffHz = 80.0f * std::pow (250.0f, cutNorm);
     filter.setCutoffFrequency (juce::jlimit (80.0f, 19900.0f, cutoffHz));
     filter.setResonance (0.707f + resNorm * 4.0f);
     for (int s = 0; s < numSamples; ++s)
@@ -426,7 +509,6 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
         outR[s] = filter.processSample (1, outR[s]);
     }
 
-    // Master Reverb
     juce::Reverb::Parameters revParams;
     revParams.roomSize = revSize;
     revParams.damping  = 0.45f;
@@ -439,7 +521,7 @@ void NoiseMu6ixSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
 
 void NoiseMu6ixSamplerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    auto root = std::make_unique<juce::XmlElement> ("NoiseMu6ixState");
+    auto root = std::make_unique<juce::XmlElement> ("NoiseMu6ixStateV2");
     root->setAttribute ("rrMode", rrMode.load());
 
     if (auto apvtsXml = apvts.copyState().createXml())
@@ -451,21 +533,40 @@ void NoiseMu6ixSamplerAudioProcessor::getStateInformation (juce::MemoryBlock& de
         auto* m = macrosXml->createNewChildElement ("Macro");
         m->setAttribute ("name", macroConfigs[i].name);
         m->setAttribute ("isSlider", macroConfigs[i].isSlider);
+        m->setAttribute ("visible", macroConfigs[i].visible);
         m->setAttribute ("target", macroConfigs[i].target);
     }
 
+    const juce::ScopedLock sl (dataLock);
+    auto* groupsXml = root->createNewChildElement ("Groups");
+    for (auto& g : groups)
+    {
+        auto* gx = groupsXml->createNewChildElement ("Group");
+        gx->setAttribute ("name", g.name);
+        gx->setAttribute ("rr", g.rrGroup);
+        gx->setAttribute ("vol", g.volumeDb);
+        gx->setAttribute ("pan", g.pan);
+        gx->setAttribute ("tune", g.tuneSemi);
+        gx->setAttribute ("solo", g.solo);
+        gx->setAttribute ("mute", g.mute);
+    }
+
     auto* zonesXml = root->createNewChildElement ("Zones");
-    const juce::ScopedLock sl (zoneLock);
     for (auto& z : zones)
     {
         auto* zx = zonesXml->createNewChildElement ("Zone");
         zx->setAttribute ("path", z->file.getFullPathName());
+        zx->setAttribute ("grp", z->groupIndex);
         zx->setAttribute ("root", z->rootNote);
         zx->setAttribute ("lowK", z->lowKey);
         zx->setAttribute ("highK", z->highKey);
         zx->setAttribute ("lowV", z->lowVel);
         zx->setAttribute ("highV", z->highVel);
-        zx->setAttribute ("rr", z->rrGroup);
+        zx->setAttribute ("vol", z->volumeDb);
+        zx->setAttribute ("pan", z->pan);
+        zx->setAttribute ("tune", z->tuneSemi);
+        zx->setAttribute ("sStart", z->sampleStart.load());
+        zx->setAttribute ("sEnd", z->sampleEnd.load());
         zx->setAttribute ("loop", z->isLooping.load());
         zx->setAttribute ("lStart", z->loopStart.load());
         zx->setAttribute ("lEnd", z->loopEnd.load());
@@ -478,7 +579,7 @@ void NoiseMu6ixSamplerAudioProcessor::getStateInformation (juce::MemoryBlock& de
 void NoiseMu6ixSamplerAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     auto root = getXmlFromBinary (data, sizeInBytes);
-    if (!root || !root->hasTagName ("NoiseMu6ixState")) return;
+    if (!root || !root->hasTagName ("NoiseMu6ixStateV2")) return;
 
     rrMode.store (root->getIntAttribute ("rrMode", 1));
 
@@ -493,9 +594,30 @@ void NoiseMu6ixSamplerAudioProcessor::setStateInformation (const void* data, int
             if (i >= numMacros) break;
             macroConfigs[i].name     = m->getStringAttribute ("name", "Macro");
             macroConfigs[i].isSlider = m->getBoolAttribute ("isSlider", false);
+            macroConfigs[i].visible  = m->getBoolAttribute ("visible", true);
             macroConfigs[i].target   = m->getIntAttribute ("target", 1);
             ++i;
         }
+    }
+
+    if (auto* groupsXml = root->getChildByName ("Groups"))
+    {
+        const juce::ScopedLock sl (dataLock);
+        groups.clear();
+        for (auto* gx : groupsXml->getChildIterator())
+        {
+            SampleGroup g;
+            g.name     = gx->getStringAttribute ("name", "Group");
+            g.rrGroup  = gx->getIntAttribute ("rr", 1);
+            g.volumeDb = (float)gx->getDoubleAttribute ("vol", 0.0);
+            g.pan      = (float)gx->getDoubleAttribute ("pan", 0.0);
+            g.tuneSemi = (float)gx->getDoubleAttribute ("tune", 0.0);
+            g.solo     = gx->getBoolAttribute ("solo", false);
+            g.mute     = gx->getBoolAttribute ("mute", false);
+            groups.push_back (g);
+        }
+        if (groups.empty())
+            groups.push_back (SampleGroup{});
     }
 
     if (auto* zonesXml = root->getChildByName ("Zones"))
@@ -506,8 +628,9 @@ void NoiseMu6ixSamplerAudioProcessor::setStateInformation (const void* data, int
             juce::File f (zx->getStringAttribute ("path"));
             if (f.existsAsFile())
             {
-                loadSampleFile (f, false);
-                const juce::ScopedLock sl (zoneLock);
+                int gIdx = zx->getIntAttribute ("grp", 0);
+                loadSampleFile (f, gIdx, false, -1);
+                const juce::ScopedLock sl (dataLock);
                 if (!zones.empty())
                 {
                     auto& z = zones.back();
@@ -516,7 +639,11 @@ void NoiseMu6ixSamplerAudioProcessor::setStateInformation (const void* data, int
                     z->highKey  = zx->getIntAttribute ("highK", 127);
                     z->lowVel   = zx->getIntAttribute ("lowV", 0);
                     z->highVel  = zx->getIntAttribute ("highV", 127);
-                    z->rrGroup  = zx->getIntAttribute ("rr", 1);
+                    z->volumeDb = (float)zx->getDoubleAttribute ("vol", 0.0);
+                    z->pan      = (float)zx->getDoubleAttribute ("pan", 0.0);
+                    z->tuneSemi = (float)zx->getDoubleAttribute ("tune", 0.0);
+                    z->sampleStart.store (zx->getIntAttribute ("sStart", 0));
+                    z->sampleEnd.store (zx->getIntAttribute ("sEnd", std::max (0, z->buffer.getNumSamples() - 1)));
                     z->isLooping.store (zx->getBoolAttribute ("loop", false));
                     z->loopStart.store (zx->getIntAttribute ("lStart", 0));
                     z->loopEnd.store (zx->getIntAttribute ("lEnd", 0));
