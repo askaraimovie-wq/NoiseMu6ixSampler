@@ -1,0 +1,26 @@
+name: Build Windows VST3
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build VST3 Release
+        run: cmake --build build --config Release --target NoiseMu6ixSampler_VST3 -j
+
+      - name: Upload VST3 Plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoiseMu6ixSampler-Windows-VST3
+          path: build/NoiseMu6ixSampler_artefacts/Release/VST3/
+          
