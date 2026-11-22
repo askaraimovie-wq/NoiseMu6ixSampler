@@ -49,7 +49,7 @@ struct MacroConfig
     int target = (int)MacroTarget::None;
 };
 
-struct SamplerVoice
+struct NM6Voice
 {
     bool active = false;
     int midiNote = -1;
@@ -118,7 +118,7 @@ private:
 
     juce::AudioFormatManager formatManager;
     static constexpr int maxVoices = 32;
-    SamplerVoice voices[maxVoices];
+    NM6Voice voices[maxVoices];
     int lastRRIndexPerNote[128] = { 0 };
     std::mt19937 rng { std::random_device{}() };
 
